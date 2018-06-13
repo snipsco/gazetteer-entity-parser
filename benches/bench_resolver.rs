@@ -34,6 +34,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         raw_value: "The Rolling Stones".to_string(),
         verbalized_value: "the rolling stones".to_string()
     });
+    gazetteer.add(EntityValue {
+        weight: 1.0,
+        raw_value: "The Flying Stones".to_string(),
+        verbalized_value: "the flying stones".to_string()
+    });
     for _ in 1..10000 {
         let name = generate_random_string();
         // println!("{:?}", name);
@@ -47,11 +52,15 @@ fn criterion_benchmark(c: &mut Criterion) {
     // println!("{:#?}", gazetteer);
     let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
     // resolver.symbol_table.write_file(Path::new("bench_symt"), false).unwrap();
-    assert_eq!(resolver.run("the stones".to_string()).unwrap(), "The Rolling Stones");
+    assert_eq!(resolver.run("the rolling".to_string()).unwrap(), "The Rolling Stones");
+    assert_eq!(resolver.run("the stones".to_string()).unwrap(), "");
     for _idx in 1..10 {
         println!("{:?}", resolver.run("the stones".to_string()).unwrap());
     }
-    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver.run("the stones".to_string())));
+    let resolver_1 = Resolver::from_gazetteer(&gazetteer).unwrap();
+    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver_1.run("the stones".to_string())));
+    let resolver_2 = Resolver::from_gazetteer(&gazetteer).unwrap();
+    c.bench_function("Resolve the rolling", move |b| b.iter(|| resolver_2.run("the rolling".to_string())));
 }
 
 criterion_group!(benches, criterion_benchmark);

@@ -3,12 +3,11 @@ use data::EntityValue;
 use errors::SnipsResolverResult;
 use snips_fst::{fst, operations, arc_iterator};
 use snips_fst::symbol_table::SymbolTable;
-use constants::EPS;
-use std::path::Path;
+use constants::{ EPS, SKIP };
 use std::ops::Range;
 
 pub struct Resolver {
-    fst: fst::Fst,
+    pub fst: fst::Fst,
     pub symbol_table: SymbolTable,
 }
 
@@ -30,6 +29,8 @@ impl Resolver {
         let mut symbol_table = SymbolTable::new();
         let eps_idx = symbol_table.add_symbol(&EPS)?;
         assert_eq!(eps_idx, 0); // There must be a cleaner way to do this
+        let skip_idx = symbol_table.add_symbol(&SKIP)?;
+        assert_eq!(skip_idx, 1); // There must be a cleaner way to do this
         Ok(Resolver {
             fst,
             symbol_table
@@ -38,12 +39,21 @@ impl Resolver {
 
     pub fn add_value(&mut self, entity_value: &EntityValue) -> SnipsResolverResult<()> {
         // compute weight for each arc based on size of string
-        let n_tokens = entity_value.verbalized_value.matches(" ").count();
+        let n_tokens = entity_value.verbalized_value.matches(" ").count() + 1;
         let weight = 1.0 / (n_tokens as f32);
         // add arcs consuming the raw value
         let mut current_head = self.fst.start();
         let mut next_head: i32;
         let mut token_idx: i32;
+
+        // Experiment accepting the whole verbalized value and outputting the
+        // whole raw value in one pass
+        // next_head = self.fst.add_state();
+        // let token_input_idx = self.symbol_table.add_symbol(&entity_value.verbalized_value)?;
+        // let token_output_idx = self.symbol_table.add_symbol(&entity_value.raw_value)?;
+        // self.fst
+        //     .add_arc(current_head, token_input_idx, token_output_idx, fst::Fst::weight_one(), next_head);
+        // current_head = next_head;
 
         for token in entity_value.verbalized_value.split_whitespace() {
             next_head = self.fst.add_state();
@@ -54,19 +64,30 @@ impl Resolver {
             self.fst
                 .add_arc(current_head, token_idx, 0, fst::Fst::weight_one(), next_head);
 
-            // Or eps, with a certain weight
+            // Or eps, with a certain weight -- output SKIP
             self.fst
-                .add_arc(current_head, 0, 0, weight, next_head);
+                .add_arc(current_head, 0, 1, weight, next_head);
+
+            // Update current head
             current_head = next_head;
         }
+
         // Add arcs outputting the raw value
-        for token in entity_value.raw_value.split_whitespace() {
-            next_head = self.fst.add_state();
-            token_idx = self.symbol_table.add_symbol(token)?;
-            self.fst
-                .add_arc(current_head, 0, token_idx, fst::Fst::weight_one(), next_head);
-            current_head = next_head;
-        }
+        // for token in entity_value.raw_value.split_whitespace() {
+        //     next_head = self.fst.add_state();
+        //     token_idx = self.symbol_table.add_symbol(token)?;
+        //     self.fst
+        //         .add_arc(current_head, 0, token_idx, fst::Fst::weight_one(), next_head);
+        //     current_head = next_head;
+        // }
+
+        // Output the full raw value in one pass
+        next_head = self.fst.add_state();
+        token_idx = self.symbol_table.add_symbol(&entity_value.raw_value)?;
+        self.fst
+            .add_arc(current_head, 0, token_idx, fst::Fst::weight_one(), next_head);
+        current_head = next_head;
+
         // Make current head final, with weight given by entity value
         self.fst.set_final(current_head, entity_value.weight);
         Ok(())
@@ -78,9 +99,10 @@ impl Resolver {
             resolver.add_value(&entity_value)?;
         }
         // FIXME: The bench stops working when optimizing the fst...
-        // resolver.fst.optimize();
-        resolver.fst.rmepsilon();
-        resolver.fst.arc_sort(true);
+        resolver.fst.optimize();
+        // resolver.fst.rmepsilon();
+        // rhs should be arc sorted on input labels
+        // resolver.fst.arc_sort(true);
         // resolver.fst = operations::determinize(&resolver.fst);
         // resolver.fst.minimize();
         Ok(resolver)
@@ -94,6 +116,17 @@ impl Resolver {
         input_fst.set_start(current_head);
         let mut next_head: i32;
         let mut token_idx: i32;
+
+        // match self.symbol_table.find_symbol(&input)? {
+        //     Some(value) => token_idx = value,
+        //     None => {
+        //         // println!("token {:?} NOT FOUND IN SYMBOL TABLE", token);
+        //         return Ok("".to_string())}
+        // }
+        // next_head = input_fst.add_state();
+        // input_fst.add_arc(current_head, token_idx, token_idx, fst::Fst::weight_one(), next_head);
+        // current_head = next_head;
+
         for token in input.split_whitespace() {
             // println!("token: {:?}", token);
             match self.symbol_table.find_symbol(token)? {
@@ -106,13 +139,21 @@ impl Resolver {
             input_fst.add_arc(current_head, token_idx, token_idx, fst::Fst::weight_one(), next_head);
             current_head = next_head;
         }
+
+        // Set final state
         input_fst.set_final(current_head, fst::Fst::weight_one());
-        input_fst.optimize();
+
+        // input_fst.write_file(Path::new("input_fst.fst"))?;
+        // self.symbol_table.write_file(Path::new("/Users/alaasaade/Documents/nr-builtin-resolver/symbol_table.txt"), false)?;
+        // self.fst.write_file(Path::new("resolver_fst.fst"))?;
+
+        // input_fst.optimize();
         input_fst.arc_sort(false);
         // Compose with the resolver fst
         let mut composition = operations::compose(&input_fst, &self.fst);
         // let mut composition = operations::compose(&self.fst, &input_fst);
         if !(composition.num_states() > 0) {
+            // println!("{:?}", "Empty composition");
             return Ok("".to_string())
         }
         composition.project(true);
@@ -124,9 +165,10 @@ impl Resolver {
         let shortest_path = composition.shortest_path(2, true, false);
         // println!("shortest path computed");
         // DEBUG
+        // composition.write_file(Path::new("composition.fst"))?;
         // input_fst.write_file(Path::new("input_fst.fst"))?;
         // self.fst.write_file(Path::new("resolver_fst.fst"))?;
-        // shortest_path.write_file(Path::new("shortest_path.fst"))?;
+        // // shortest_path.write_file(Path::new("shortest_path.fst"))?;
         // self.symbol_table.write_file(Path::new("/Users/alaasaade/Documents/nr-builtin-resolver/symbol_table.txt"), false)?;
         // unimplemented!()
 
@@ -146,11 +188,19 @@ impl Resolver {
                     // fails
                     _ => return Ok("".to_string())
                 }
-                if arc.olabel() == 0 {
-                    current_head = arc.nextstate();
-                    continue;
+                let olabel: i32;
+                match arc.olabel() {
+                    0 | 1 => {
+                        current_head = arc.nextstate();
+                        continue;
+                    }
+                    value => {olabel = value;}
                 }
-                decoded_tokens.push(self.symbol_table.find_index(arc.olabel())?.unwrap());
+                // if arc.olabel() == 0 {
+                //     current_head = arc.nextstate();
+                //     continue;
+                // }
+                decoded_tokens.push(self.symbol_table.find_index(olabel)?.unwrap());
                 current_head = arc.nextstate();
             }
         }
@@ -167,9 +217,14 @@ impl Resolver {
 // Do a test that checks what happens if I add a the same symbol twice in a row
 
 #[cfg(test)]
+extern crate serde_json;
 mod tests {
     use super::*;
     use data::EntityValue;
+    use std::fs::File;
+    use serde_json;
+    use std::path::Path;
+
     #[test]
     fn test_resolver() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
@@ -202,4 +257,32 @@ mod tests {
         let resolved = resolver.run("blink one eight two".to_string()).unwrap();
         assert_eq!(resolved, "Blink-182");
     }
+
+    #[test]
+    fn test_large_gazetteer() {
+        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let file = File::open("/Users/alaasaade/Documents/snips-grammars/snips_grammars/resources/fr/music/artist.json").unwrap();
+        let mut data: Vec<String> = serde_json::from_reader(file).unwrap();
+        // for idx in 1..10 {
+        //     println!("{:?}", data.get(idx));
+        // }
+        data.truncate(100000);
+        for val in data {
+            // println!("{:?}", val);
+            // if val == "The Stones" {
+            //     println!("{:?}", val);
+            // }
+            gazetteer.add(EntityValue {
+                weight: 1.0,
+                raw_value: val.clone(),
+                verbalized_value: val.clone().to_lowercase()
+            })
+        }
+        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
+        resolver.fst.write_file(Path::new("test_large_gazetteer.fst")).unwrap();
+        resolver.symbol_table.write_file(Path::new("test_large_gazetteer.symt"), true).unwrap();
+        assert_eq!(resolver.run("ariana grande".to_string()).unwrap(), "Ariana Grande");
+        assert_eq!(resolver.run("the stones".to_string()).unwrap(), "The Rolling Stones");
+        // assert_eq!(resolver.run("ariana".to_string()).unwrap(), "Ariana Grande");
+   }
 }

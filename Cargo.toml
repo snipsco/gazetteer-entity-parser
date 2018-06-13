@@ -6,11 +6,12 @@ authors = ["Alaa Saade <alaa.saade@snips.ai>"]
 [dependencies]
 snips-fst = { git = "ssh://git@github.com/snipsco/snips-fst-rs", rev = "b3c90ea" }
 failure = "0.1"
+serde_json = "*"
 
 [dev-dependencies]
 criterion = "0.2"
 rand = "0.5"
 
 [[bench]]
-name = "bench_resolver"
+name = "bench_resolver_artist_gaz"
 harness = false

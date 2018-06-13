@@ -1,5 +1,6 @@
 extern crate failure;
 extern crate snips_fst;
+extern crate serde_json;
 
 pub mod data;
 pub mod errors;

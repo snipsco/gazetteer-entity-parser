@@ -1,8 +1,8 @@
 #[derive(Debug)]
 pub struct EntityValue {
     pub weight: f32,
-    pub raw_value: String,
-    pub verbalized_value: String,
+    pub raw_value: String,  // TODO: rename to resolved value
+    pub verbalized_value: String,  // TODO: rename to raw value
 }
 
 #[derive(Debug)]
