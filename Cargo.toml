@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
 
 [dependencies]
-snips-fst = { git = "ssh://git@github.com/snipsco/snips-fst-rs", rev = "b3c90ea" }
+snips-fst = { git = "ssh://git@github.com/snipsco/snips-fst-rs", rev = "52208051da5ed8832a74e77955d0f8235405a931" }
 failure = "0.1"
 serde_json = "*"
 

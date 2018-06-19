@@ -1,3 +1,4 @@
+#[macro_use]
 extern crate failure;
 extern crate snips_fst;
 extern crate serde_json;

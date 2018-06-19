@@ -70,16 +70,17 @@ fn criterion_benchmark(c: &mut Criterion) {
     // }
     // println!("{:#?}", gazetteer);
     let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
-    resolver.symbol_table.write_file(Path::new("bench_symt"), false).unwrap();
-    resolver.fst.write_file(Path::new("bench_fst")).unwrap();
-    assert_eq!(resolver.run("the rolling stones".to_string()).unwrap(), "The Rolling Stones");
-    assert_eq!(resolver.run("the rolling".to_string()).unwrap(), "The Rolling Stones");
+    // resolver.symbol_table.write_file(Path::new("bench_symt"), false).unwrap();
+    // resolver.fst.write_file(Path::new("bench_fst")).unwrap();
+    assert_eq!(resolver.run("veux ecouter rolling stones".to_string()).unwrap(), "<skip> <skip> The_Rolling_Stones");
+    // assert_eq!(resolver.run("veux ecouter brel".to_string()).unwrap(), "<skip> <skip> Jacques_Brel");
+    // assert_eq!(resolver.run("the rolling".to_string()).unwrap(), "<skip> The_Rolling_Stones");
     // assert_eq!(resolver.run("the stones".to_string()).unwrap(), "The Stones");
     // for _idx in 1..10 {
     //     println!("{:?}", resolver.run("the stones".to_string()).unwrap());
     // }
     let resolver_1 = Resolver::from_gazetteer(&gazetteer).unwrap();
-    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver_1.run("the stones".to_string())));
+    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver_1.run("ecouter the stones".to_string())));
     let resolver_2 = Resolver::from_gazetteer(&gazetteer).unwrap();
     c.bench_function("Resolve the rolling", move |b| b.iter(|| resolver_2.run("the rolling".to_string())));
 }
