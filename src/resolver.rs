@@ -22,6 +22,9 @@ pub struct ResolvedValue {
 // TODO: replace String by &str unless in constructor if object needs to own said string
 
 impl Resolver {
+
+    /// Create an empty resolver. Its resolver has a single, start state. Its symbol table has
+    /// epsilon and a skip symbol
     pub fn new() -> SnipsResolverResult<Resolver> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
@@ -31,88 +34,65 @@ impl Resolver {
         let mut symbol_table = SymbolTable::new();
         let eps_idx = symbol_table.add_symbol(&EPS)?;
         assert_eq!(eps_idx, 0); // There must be a cleaner way to do this
-        let skip_idx = symbol_table.add_symbol(&SKIP)?;
-        assert_eq!(skip_idx, 1); // There must be a cleaner way to do this
+        // let skip_idx = symbol_table.add_symbol(&SKIP)?;
+        // assert_eq!(skip_idx, 1); // There must be a cleaner way to do this
         Ok(Resolver {
             fst,
             symbol_table
         })
     }
 
+    /// This function returns a FST that checks that at least one of the words in `verbalized_value`
+    /// is matched. This allows to disable many branches during the composition. It returns the
+    /// state at the output of the bottleneck. On the left, the bottleneck is connected to the
+    /// start state of the fst. Each token is consumed with weight `weight_by_token` and returns
+    /// epsilon
+    fn make_bottleneck(&mut self, verbalized_value: &String, weight_by_token: f32) -> SnipsResolverResult<i32> {
+        let current_head = self.fst.start();
+        let next_head = self.fst.add_state();
+        for token in verbalized_value.split_whitespace() {
+            let token_idx = self.symbol_table.add_symbol(token)?;
+            self.fst
+                .add_arc(current_head, token_idx, 0, weight_by_token, next_head);
+        }
+        Ok(next_head)
+    }
+
+    /// This function creates the transducer that maps a subset of the verbalized value onto
+    /// the resolved value.
+    fn make_value_transducer(&mut self, mut current_head: i32, entity_value: &EntityValue, weight_by_token: f32) -> SnipsResolverResult<()> {
+        let mut next_head: i32;
+        // First we consume the verbalized value
+        for token in entity_value.verbalized_value.split_whitespace() {
+            next_head = self.fst.add_state();
+            let token_idx = self.symbol_table.add_symbol(token)?;
+            // Each arc can either consume a token...
+            self.fst
+                .add_arc(current_head, token_idx, 0, 0.0, next_head);
+            // Or skip the word, with a certain weight
+            self.fst
+                .add_arc(current_head, 0, 0, weight_by_token, next_head);
+            // Update current head
+            current_head = next_head;
+        }
+        // Next we output the resolved value
+        next_head = self.fst.add_state();
+        // The symbol table cannot be deserialized if some symbols contain whitespaces. So we
+        // replace them with underscores.
+        let token_idx = self.symbol_table.add_symbol(&entity_value.raw_value.replace(" ", "_"))?;
+        self.fst
+            .add_arc(current_head, 0, token_idx, 0.0, next_head);
+        // Make current head final, with weight given by entity value
+        self.fst.set_final(next_head, entity_value.weight);
+        Ok(())
+    }
+
     pub fn add_value(&mut self, entity_value: &EntityValue) -> SnipsResolverResult<()> {
         // compute weight for each arc based on size of string
         let n_tokens = entity_value.verbalized_value.matches(" ").count() + 1;
-        // let weight = 1.0 / (max(n_tokens - 1, 1) as f32);
-        let weight = 1.0 / (n_tokens as f32);
-        // add arcs consuming the raw value
-        let mut current_head = self.fst.start();
-        let mut next_head: i32;
-        let mut token_idx: i32;
-
-        // Experiment accepting the whole verbalized value and outputting the
-        // whole raw value in one pass
-        // next_head = self.fst.add_state();
-        // let token_input_idx = self.symbol_table.add_symbol(&entity_value.verbalized_value)?;
-        // let token_output_idx = self.symbol_table.add_symbol(&entity_value.raw_value)?;
-        // self.fst
-        //     .add_arc(current_head, token_input_idx, token_output_idx, fst::Fst::weight_one(), next_head);
-        // current_head = next_head;
-
-        next_head = self.fst.add_state();
-        for token in entity_value.verbalized_value.split_whitespace() {
-            token_idx = self.symbol_table.add_symbol(token)?;
-            // self.fst
-            //     .add_arc(current_head, token_idx, 0, fst::Fst::weight_one(), next_head);
-            self.fst
-                .add_arc(current_head, token_idx, 0, - weight, next_head);
-        }
-        current_head = next_head;
-        if n_tokens > 1 {
-            for token in entity_value.verbalized_value.split_whitespace() {
-                next_head = self.fst.add_state();
-                // println!("token: {:?}", token);
-                token_idx = self.symbol_table.add_symbol(token)?;
-                // println!("{:?}", token);
-                // Each arc can either consume a token...
-                // self.fst
-                //     .add_arc(current_head, token_idx, 0, fst::Fst::weight_one(), next_head);
-
-                self.fst
-                    .add_arc(current_head, token_idx, 0, 0.0, next_head);
-
-                // Or eps, with a certain weight -- output SKIP
-                self.fst
-                    .add_arc(current_head, 0, 1, weight, next_head);
-
-                // Or insert a token with a certain weight
-                // self.fst
-                //     .add_arc(current_head, 1, 1, weight, next_head);
-
-                // Update current head
-                current_head = next_head;
-            }
-        }
-        // Add arcs outputting the raw value
-        // for token in entity_value.raw_value.split_whitespace() {
-        //     next_head = self.fst.add_state();
-        //     token_idx = self.symbol_table.add_symbol(token)?;
-        //     self.fst
-        //         .add_arc(current_head, 0, token_idx, fst::Fst::weight_one(), next_head);
-        //     current_head = next_head;
-        // }
-
-        // Output the full raw value in one pass
-        next_head = self.fst.add_state();
-        token_idx = self.symbol_table.add_symbol(&entity_value.raw_value.replace(" ", "_"))?;
-        // self.fst
-        //     .add_arc(current_head, 0, token_idx, fst::Fst::weight_one(), next_head);
-        self.fst
-            .add_arc(current_head, 0, token_idx, 0.0, next_head);
-        current_head = next_head;
-
-        // Make current head final, with weight given by entity value
-        // self.fst.set_final(current_head, entity_value.weight);
-        self.fst.set_final(current_head, 0.0);
+        let weight_by_token = 1.0 / (n_tokens as f32);
+        let current_head = self.make_bottleneck(&entity_value.verbalized_value, - weight_by_token)?;
+        self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
         Ok(())
     }
 
@@ -121,16 +101,9 @@ impl Resolver {
         for entity_value in &gazetteer.data {
             resolver.add_value(&entity_value)?;
         }
-        // FIXME: The bench stops working when optimizing the fst...
-        // resolver.fst.closure_plus();
-        // resolver.fst.prune(1.0);
         resolver.fst.optimize();
-        // resolver.fst.closure_plus();
-        // resolver.fst.rmepsilon();
-        // rhs should be arc sorted on input labels
+        resolver.fst.closure_plus();
         resolver.fst.arc_sort(true);
-        // resolver.fst = operations::determinize(&resolver.fst);
-        // resolver.fst.minimize();
         Ok(resolver)
     }
 
@@ -175,7 +148,7 @@ impl Resolver {
                     input_fst.add_arc(current_head, value, value, fst::Fst::weight_one(), next_head);
                     // Allow skipping the word with a large weight
                     // input_fst.add_arc(current_head, value, 0, 100.0, next_head);
-                    input_fst.set_final(next_head, fst::Fst::weight_one());
+                    // input_fst.set_final(next_head, fst::Fst::weight_one());
                     current_head = next_head;
                 }
                 None => {
@@ -307,35 +280,35 @@ mod tests {
         // resolver.fst.write_file(Path::new("resolver_fst.fst")).unwrap();
         // resolver.symbol_table.write_file(Path::new("symbol_table.txt"), false).unwrap();
 
+        let resolved = resolver.run("je veux ecouter les rolling stones".to_string()).unwrap();
+        assert_eq!(resolved, "Je_Suis_Animal The_Rolling_Stones");
+
         // let resolved = resolver.run("je veux ecouter les rolling stones".to_string()).unwrap();
-        // assert_eq!(resolved, "<skip> <skip> Je_Suis_Animal <skip> The_Rolling_Stones");
+        // assert_eq!(resolved, "<skip> <skip> <skip> Je_Suis_Animal");
 
-        let resolved = resolver.run("je veux ecouter les rolling stones".to_string()).unwrap();
-        assert_eq!(resolved, "<skip> <skip> <skip> Je_Suis_Animal");
-
-        let resolved = resolver.run("je veux ecouter les rolling stones".to_string()).unwrap();
-        assert_eq!(resolved, "<skip> <skip> <skip> Je_Suis_Animal");
+        // let resolved = resolver.run("je veux ecouter les rolling stones".to_string()).unwrap();
+        // assert_eq!(resolved, "<skip> <skip> <skip> Je_Suis_Animal");
 
         // print!("Resolver fst num states {:?}", resolver.fst.num_states());
         // resolver.fst.write_file(Path::new("resolver_fst_1.fst")).unwrap();
         // resolver.symbol_table.write_file(Path::new("symbol_table_1.txt"), false).unwrap();
         let resolved = resolver.run("rolling stones".to_string()).unwrap();
-        assert_eq!(resolved, "<skip> <skip> The_Rolling_Stones");
+        assert_eq!(resolved, "The_Rolling_Stones");
 
         // resolver.fst.write_file(Path::new("resolver_fst_2.fst")).unwrap();
         // resolver.symbol_table.write_file(Path::new("symbol_table_2.txt"), false).unwrap();
         let resolved = resolver.run("i want to listen to rolling stones and blink one eight".to_string()).unwrap();
-        // assert_eq!(resolved, "<skip> The_Rolling_Stones <skip> Blink-182");
-        assert_eq!(resolved, "<skip> <skip> The_Rolling_Stones");
+        assert_eq!(resolved, "The_Rolling_Stones Blink-182");
+        // assert_eq!(resolved, "<skip> <skip> The_Rolling_Stones");
 
-        let resolved = resolver.run("joue moi the stones".to_string()).unwrap();
-        assert_eq!(resolved, "");
+        // let resolved = resolver.run("joue moi the stones".to_string()).unwrap();
+        // assert_eq!(resolved, "");
 
         let resolved = resolver.run("joue moi quelque chose".to_string()).unwrap();
         assert_eq!(resolved, "");
 
         let resolved = resolver.run("joue moi quelque chose des rolling stones".to_string()).unwrap();
-        assert_eq!(resolved, "<skip> <skip> The_Rolling_Stones");
+        assert_eq!(resolved, "The_Rolling_Stones");
 
         // let resolved = resolver.run("the stones".to_string()).unwrap();
         // assert_eq!(resolved, "");
