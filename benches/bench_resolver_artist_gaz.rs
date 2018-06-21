@@ -44,19 +44,19 @@ fn criterion_benchmark(c: &mut Criterion) {
         // }
         gazetteer.add(EntityValue {
             weight: 1.0,
-            raw_value: val.clone(),
-            verbalized_value: val.clone().to_lowercase()
+            resolved_value: val.clone(),
+            raw_value: val.clone().to_lowercase()
         })
     }
     // gazetteer.add(EntityValue {
     //     weight: 1.0,
-    //     raw_value: "The Rolling Stones".to_string(),
-    //     verbalized_value: "the rolling stones".to_string()
+    //     resolved_value: "The Rolling Stones".to_string(),
+    //     raw_value: "the rolling stones".to_string()
     // });
     // gazetteer.add(EntityValue {
     //     weight: 1.0,
-    //     raw_value: "The Flying Stones".to_string(),
-    //     verbalized_value: "the flying stones".to_string()
+    //     resolved_value: "The Flying Stones".to_string(),
+    //     raw_value: "the flying stones".to_string()
     // });
     // for _ in 1..10000 {
     //     let name = generate_random_string();
@@ -64,8 +64,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     //     let verbalized = name.to_lowercase();
     //     gazetteer.add(EntityValue {
     //         weight: 1.0,
-    //         raw_value: name,
-    //         verbalized_value: verbalized,
+    //         resolved_value: name,
+    //         raw_value: verbalized,
     //     });
     // }
     // println!("{:#?}", gazetteer);

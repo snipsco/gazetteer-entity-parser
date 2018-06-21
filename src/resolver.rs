@@ -50,8 +50,8 @@ impl Resolver {
     fn make_bottleneck(&mut self, verbalized_value: &String, weight_by_token: f32) -> SnipsResolverResult<i32> {
         let current_head = self.fst.start();
         let next_head = self.fst.add_state();
-        for token in verbalized_value.split_whitespace() {
-            let token_idx = self.symbol_table.add_symbol(token)?;
+        for (_, token) in whitespace_tokenizer(verbalized_value) {
+            let token_idx = self.symbol_table.add_symbol(&token)?;
             self.fst
                 .add_arc(current_head, token_idx, token_idx, weight_by_token, next_head);
         }
@@ -62,10 +62,10 @@ impl Resolver {
     /// the resolved value.
     fn make_value_transducer(&mut self, mut current_head: i32, entity_value: &EntityValue, weight_by_token: f32) -> SnipsResolverResult<()> {
         let mut next_head: i32;
-        // First we consume the verbalized value
-        for token in entity_value.verbalized_value.split_whitespace() {
+        // First we consume the raw value
+        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
             next_head = self.fst.add_state();
-            let token_idx = self.symbol_table.add_symbol(token)?;
+            let token_idx = self.symbol_table.add_symbol(&token)?;
             // Each arc can either consume a token, and output it...
             self.fst
                 .add_arc(current_head, token_idx, token_idx, 0.0, next_head);
@@ -79,7 +79,7 @@ impl Resolver {
         next_head = self.fst.add_state();
         // The symbol table cannot be deserialized if some symbols contain whitespaces. So we
         // replace them with underscores.
-        let token_idx = self.symbol_table.add_symbol(&fst_format_resolved_value(&entity_value.raw_value))?;
+        let token_idx = self.symbol_table.add_symbol(&fst_format_resolved_value(&entity_value.resolved_value))?;
         self.fst
             .add_arc(current_head, 0, token_idx, 0.0, next_head);
         // Make current head final, with weight given by entity value
@@ -92,9 +92,10 @@ impl Resolver {
     /// performs additional global optimizations.
     fn add_value(&mut self, entity_value: &EntityValue) -> SnipsResolverResult<()> {
         // compute weight for each arc based on size of string
-        let n_tokens = entity_value.verbalized_value.matches(" ").count() + 1;
+        // FIXME: find better way to compute number of tokens
+        let n_tokens = entity_value.raw_value.matches(" ").count() + 1;
         let weight_by_token = 1.0 / (n_tokens as f32);
-        let current_head = self.make_bottleneck(&entity_value.verbalized_value, - weight_by_token)?;
+        let current_head = self.make_bottleneck(&entity_value.raw_value, - weight_by_token)?;
         self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
         Ok(())
     }
@@ -155,18 +156,18 @@ impl Resolver {
     }
 
     fn format_string_path(string_path: &StringPath, tokens_range: &Vec<Range<usize>>, threshold: f32) -> SnipsResolverResult<Vec<ResolvedValue>> {
-        let mut input_iterator = string_path.istring.split_whitespace();
+        let mut input_iterator = whitespace_tokenizer(&string_path.istring);
         let mut resolved_values: Vec<ResolvedValue> = vec!();
-        let mut input_value_until_now: Vec<&str> = vec!();
+        let mut input_value_until_now: Vec<String> = vec!();
         let mut current_ranges: Vec<&Range<usize>> = vec!();
         let mut advance_input = false;
-        let mut current_input_token = input_iterator.next().ok_or_else(|| format_err!("Empty input string"))?;
+        let (_, mut current_input_token) = input_iterator.next().ok_or_else(|| format_err!("Empty input string"))?;
         let mut current_input_token_idx: usize = 0;
-        for token in string_path.ostring.split_whitespace() {
+        for (_, token) in whitespace_tokenizer(&string_path.ostring) {
             if advance_input {
                 let tentative_new_token = input_iterator.next();
                 match tentative_new_token {
-                    Some(value) => {
+                    Some((_, value)) => {
                         current_input_token = value;
                         current_input_token_idx += 1;
                     },
@@ -179,7 +180,7 @@ impl Resolver {
                 resolved_values.push(
                     ResolvedValue{
                         raw_value: input_value_until_now.join(" "),
-                        resolved_value: fst_unformat_resolved_value(token),
+                        resolved_value: fst_unformat_resolved_value(&token),
                         range: range_start..range_end
                     }
                 );
@@ -199,7 +200,7 @@ impl Resolver {
 
     /// Resolve the input string `input`
     pub fn run(&self, input: &str) -> SnipsResolverResult<Vec<ResolvedValue>> {
-        // FIXME: implement logic when two paths exist in composition but with different weights
+        // FIXME: implement logic of ranking of artists
 
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
         // Compose with the resolver fst
@@ -226,23 +227,23 @@ mod tests {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             weight: 1.0,
-            raw_value: "The Flying Stones".to_string(),
-            verbalized_value: "the flying stones".to_string(),
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
             weight: 1.0,
-            raw_value: "The Rolling Stones".to_string(),
-            verbalized_value: "the rolling stones".to_string(),
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
             weight: 1.0,
-            raw_value: "Blink-182".to_string(),
-            verbalized_value: "blink one eight two".to_string(),
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
             weight: 1.0,
-            raw_value: "Je Suis Animal".to_string(),
-            verbalized_value: "je suis animal".to_string(),
+            resolved_value: "Je Suis Animal".to_string(),
+            raw_value: "je suis animal".to_string(),
         });
         let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
 
@@ -275,5 +276,57 @@ mod tests {
 
         resolved = resolver.run("joue moi quelque chose").unwrap();
         assert_eq!(resolved, vec!());
+    }
+
+    #[test]
+    fn test_resolver_with_ranking() {
+        let mut gazetteer = Gazetteer { data: Vec::new() };
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Jacques Brel".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink one eight two".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Je Suis Animal".to_string(),
+            raw_value: "je suis animal".to_string(),
+        });
+        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
+    }
+
+    #[test]
+    fn test_resolver_with_threshold() {
+        let mut gazetteer = Gazetteer { data: Vec::new() };
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink one eight two".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Je Suis Animal".to_string(),
+            raw_value: "je suis animal".to_string(),
+        });
+        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
     }
 }
