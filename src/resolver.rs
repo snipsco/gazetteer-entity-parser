@@ -21,8 +21,6 @@ pub struct ResolvedValue {
     pub raw_value: String
 }
 
-// TODO: replace String by &str unless in constructor if object needs to own said string
-
 impl Resolver {
 
     /// Create an empty resolver. Its resolver has a single, start state. Its symbol table has
@@ -92,8 +90,7 @@ impl Resolver {
     /// performs additional global optimizations.
     fn add_value(&mut self, entity_value: &EntityValue) -> SnipsResolverResult<()> {
         // compute weight for each arc based on size of string
-        // FIXME: find better way to compute number of tokens
-        let n_tokens = entity_value.raw_value.matches(" ").count() + 1;
+        let n_tokens = whitespace_tokenizer(&entity_value.raw_value).count();
         let weight_by_token = 1.0 / (n_tokens as f32);
         let current_head = self.make_bottleneck(&entity_value.raw_value, - weight_by_token)?;
         self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
@@ -280,6 +277,7 @@ mod tests {
 
     #[test]
     fn test_resolver_with_ranking() {
+        // TODO: implement this test
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             weight: 1.0,
@@ -306,6 +304,7 @@ mod tests {
 
     #[test]
     fn test_resolver_with_threshold() {
+        // TODO: implement this test
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             weight: 1.0,
