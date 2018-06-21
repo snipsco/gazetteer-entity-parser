@@ -13,6 +13,12 @@ pub fn fst_unformat_resolved_value(string: &str) -> String {
     string.replace(&format!("{}:", RESOLVED_SYMBOL), "").replace("_", " ")
 }
 
+pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
+    // we use n_skip - 1 because the bottleneck takes away one good token
+    // that ends uo being skipped
+    (n_decoded as f32) / (n_decoded as f32 + n_skips as f32 - 1.0) >= threshold
+}
+
 #[derive(Debug)]
 pub struct WhitespaceTokenizer<'a> {
     current_idx: usize,

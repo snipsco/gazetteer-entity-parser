@@ -4,14 +4,15 @@ use errors::SnipsResolverResult;
 use snips_fst::{fst, operations};
 use snips_fst::string_paths_iterator::{ StringPath, StringPathsIterator };
 use snips_fst::symbol_table::SymbolTable;
-use constants::{ EPS, DECODING_THRESHOLD };
-use utils::{fst_format_resolved_value, fst_unformat_resolved_value};
+use constants::{ EPS, EPS_IDX, SKIP, SKIP_IDX };
+use utils::{fst_format_resolved_value, fst_unformat_resolved_value, check_threshold};
 use std::ops::Range;
 use utils::whitespace_tokenizer;
 
 pub struct Resolver {
     pub fst: fst::Fst,
     pub symbol_table: SymbolTable,
+    pub decoding_threshold: f32
 }
 
 #[derive(Debug, PartialEq)]
@@ -25,18 +26,21 @@ impl Resolver {
 
     /// Create an empty resolver. Its resolver has a single, start state. Its symbol table has
     /// epsilon and a skip symbol
-    pub fn new() -> SnipsResolverResult<Resolver> {
+    pub fn new(decoding_threshold: f32) -> SnipsResolverResult<Resolver> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
         let start_state = fst.add_state();
         fst.set_start(start_state);
-        // Add a symbol table with epsilon
+        // Add a symbol table with epsilon and skip symbols
         let mut symbol_table = SymbolTable::new();
-        let eps_idx = symbol_table.add_symbol(&EPS)?;
-        assert_eq!(eps_idx, 0); // There must be a cleaner way to do this
+        let eps_idx = symbol_table.add_symbol(EPS)?;
+        assert_eq!(eps_idx, EPS_IDX);
+        let skip_idx = symbol_table.add_symbol(SKIP)?;
+        assert_eq!(skip_idx, SKIP_IDX);
         Ok(Resolver {
             fst,
-            symbol_table
+            symbol_table,
+            decoding_threshold
         })
     }
 
@@ -67,9 +71,9 @@ impl Resolver {
             // Each arc can either consume a token, and output it...
             self.fst
                 .add_arc(current_head, token_idx, token_idx, 0.0, next_head);
-            // Or skip the word, with a certain weight
+            // Or skip the word, with a certain weight, outputting skip
             self.fst
-                .add_arc(current_head, 0, 0, weight_by_token, next_head);
+                .add_arc(current_head, EPS_IDX, SKIP_IDX, weight_by_token, next_head);
             // Update current head
             current_head = next_head;
         }
@@ -79,7 +83,7 @@ impl Resolver {
         // replace them with underscores.
         let token_idx = self.symbol_table.add_symbol(&fst_format_resolved_value(&entity_value.resolved_value))?;
         self.fst
-            .add_arc(current_head, 0, token_idx, 0.0, next_head);
+            .add_arc(current_head, EPS_IDX, token_idx, 0.0, next_head);
         // Make current head final, with weight given by entity value
         self.fst.set_final(next_head, entity_value.weight);
         Ok(())
@@ -100,8 +104,8 @@ impl Resolver {
     /// Create a resolver from a gazetteer. This function adds the entity values from the gazetteer
     /// and performs several optimizations on the resulting FST. This is the recommended method
     /// to define a resolver
-    pub fn from_gazetteer(gazetteer: &Gazetteer) -> SnipsResolverResult<Resolver> {
-        let mut resolver = Resolver::new()?;
+    pub fn from_gazetteer(gazetteer: &Gazetteer, threshold: f32) -> SnipsResolverResult<Resolver> {
+        let mut resolver = Resolver::new(threshold)?;
         for entity_value in &gazetteer.data {
             resolver.add_value(&entity_value)?;
         }
@@ -141,13 +145,13 @@ impl Resolver {
         Ok((input_fst, tokens_ranges))
     }
 
-    fn decode_shortest_path(&self, shortest_path: &fst::Fst, tokens_range: &Vec<Range<usize>>, threshold: f32) -> SnipsResolverResult<Vec<ResolvedValue>> {
+    fn decode_shortest_path(&self, shortest_path: &fst::Fst, tokens_range: &Vec<Range<usize>>) -> SnipsResolverResult<Vec<ResolvedValue>> {
         let mut path_iterator = StringPathsIterator::new(&shortest_path,
             &self.symbol_table, &self.symbol_table, true, true);
         match path_iterator.next() {
             None => return Ok(vec!()), // this should not happen because the shortest path should contain at least a path
             Some(value) => {
-                return Ok(Resolver::format_string_path(&value?, &tokens_range, threshold)?)
+                return Ok(Resolver::format_string_path(&value?, &tokens_range, self.decoding_threshold)?)
             }
         }
     }
@@ -160,7 +164,12 @@ impl Resolver {
         let mut advance_input = false;
         let (_, mut current_input_token) = input_iterator.next().ok_or_else(|| format_err!("Empty input string"))?;
         let mut current_input_token_idx: usize = 0;
+        let mut n_skips: usize = 0;
         for (_, token) in whitespace_tokenizer(&string_path.ostring) {
+            if token == SKIP {
+                n_skips += 1;
+                continue;
+            }
             if advance_input {
                 let tentative_new_token = input_iterator.next();
                 match tentative_new_token {
@@ -174,21 +183,25 @@ impl Resolver {
             if current_input_token != token {
                 let range_start = current_ranges.first().unwrap().start;
                 let range_end = current_ranges.last().unwrap().end;
-                resolved_values.push(
-                    ResolvedValue{
-                        raw_value: input_value_until_now.join(" "),
-                        resolved_value: fst_unformat_resolved_value(&token),
-                        range: range_start..range_end
-                    }
-                );
+                if check_threshold(input_value_until_now.len(), n_skips, threshold) {
+                    resolved_values.push(
+                        ResolvedValue{
+                            raw_value: input_value_until_now.join(" "),
+                            resolved_value: fst_unformat_resolved_value(&token),
+                            range: range_start..range_end
+                        }
+                    );
+                }
+                // Reinitialize accumulators
+                n_skips = 0;
                 input_value_until_now = vec!();
                 current_ranges = vec!();
                 advance_input = false;
             } else {
                 input_value_until_now.push(token);
                 current_ranges.push(tokens_range
-                                        .get(current_input_token_idx)
-                                        .ok_or_else(|| format_err!("Decoding went wrong"))?);
+                                    .get(current_input_token_idx)
+                                    .ok_or_else(|| format_err!("Decoding went wrong"))?);
                 advance_input = true;
             }
         }
@@ -207,7 +220,7 @@ impl Resolver {
         }
         let shortest_path = composition.shortest_path(1, false, false);
 
-        let resolution = self.decode_shortest_path(&shortest_path, &tokens_range, DECODING_THRESHOLD)?;
+        let resolution = self.decode_shortest_path(&shortest_path, &tokens_range)?;
 
         Ok(resolution)
     }
@@ -242,7 +255,7 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
+        let resolver = Resolver::from_gazetteer(&gazetteer, 0.0).unwrap();
 
         let mut resolved = resolver.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -299,7 +312,7 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
+        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
     }
 
     #[test]
@@ -326,6 +339,40 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
+        gazetteer.add(EntityValue {
+            weight: 1.0,
+            resolved_value: "Les Enfoirés".to_string(),
+            raw_value: "les enfoirés".to_string(),
+        });
+        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let mut resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        assert_eq!(
+            resolved,
+            vec!(
+                ResolvedValue { resolved_value: "Les Enfoirés".to_string(), range: 16..19, raw_value: "les".to_string() },
+                ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 20..34}
+            )
+        );
+
+        let resolver = Resolver::from_gazetteer(&gazetteer, 0.3).unwrap();
+        let mut resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        assert_eq!(
+            resolved,
+            vec!(
+                ResolvedValue{ raw_value: "je".to_string(), resolved_value: "Je Suis Animal".to_string(), range: 0..2},
+                ResolvedValue { resolved_value: "Les Enfoirés".to_string(), range: 16..19, raw_value: "les".to_string() },
+                ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 20..34}
+            )
+        );
+
+        let resolver = Resolver::from_gazetteer(&gazetteer, 0.6).unwrap();
+        let mut resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        assert_eq!(
+            resolved,
+            vec!(
+                ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 20..34}
+            )
+        );
+
     }
 }
