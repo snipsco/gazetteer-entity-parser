@@ -9,7 +9,6 @@ extern crate serde_json;
 
 use rand::thread_rng;
 use rand::Rng;
-use std::fs::File;
 // use rand::prelude::*;
 use nr_builtin_resolver::data::{EntityValue, Gazetteer};
 use nr_builtin_resolver::resolver::{ResolvedValue, Resolver};
@@ -29,63 +28,38 @@ use criterion::Criterion;
 // }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut gazetteer = Gazetteer { data: Vec::new() };
-    let file = File::open(
-        "/Users/alaasaade/Documents/snips-grammars/snips_grammars/resources/fr/music/artist.json",
-    ).unwrap();
-    let mut data: Vec<String> = serde_json::from_reader(file).unwrap();
-    // for idx in 1..10 {
-    //     println!("{:?}", data.get(idx));
-    // }
-    data.truncate(100000);
-    for val in data {
-        // println!("{:?}", val);
-        // if val == "The Stones" {
-        //     println!("{:?}", val);
-        // }
-        gazetteer.add(EntityValue {
-            weight: 1.0,
-            resolved_value: val.clone(),
-            raw_value: val.clone().to_lowercase(),
-        })
-    }
-    // gazetteer.add(EntityValue {
-    //     weight: 1.0,
-    //     resolved_value: "The Rolling Stones".to_string(),
-    //     raw_value: "the rolling stones".to_string()
-    // });
-    // gazetteer.add(EntityValue {
-    //     weight: 1.0,
-    //     resolved_value: "The Flying Stones".to_string(),
-    //     raw_value: "the flying stones".to_string()
-    // });
-    // for _ in 1..10000 {
-    //     let name = generate_random_string();
-    //     // println!("{:?}", name);
-    //     let verbalized = name.to_lowercase();
-    //     gazetteer.add(EntityValue {
-    //         weight: 1.0,
-    //         resolved_value: name,
-    //         raw_value: verbalized,
-    //     });
-    // }
-    // println!("{:#?}", gazetteer);
+    let mut gazetteer = Gazetteer::from_json(
+        Path::new("/Users/alaasaade/Documents/nr-builtin-resolver/local_testing/artist_gazeteer_formatted.json"),
+        Some(100000)).unwrap();
+    gazetteer.add(EntityValue {
+                resolved_value: "Jacques".to_string(),
+                raw_value: "jacques".to_string(),
+            });
     let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
-    // resolver.symbol_table.write_file(Path::new("bench_symt"), false).unwrap();
-    // resolver.fst.write_file(Path::new("bench_fst")).unwrap();
-    // assert_eq!(resolver.run("veux ecouter rolling stones").unwrap(),             vec!(
-    //     ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 13..27}));
+    // gazetteer = Gazetteer { data: vec!() }
+    assert_eq!(
+        resolver.run("je veux écouter jacques").unwrap(),
+        vec![ResolvedValue {
+            raw_value: "jacques".to_string(),
+            resolved_value: "Jacques".to_string(),
+            range: 16..23,
+        }]
+    );
+
+    assert_eq!(
+        resolver.run("je veux écouter brel").unwrap(),
+        vec![ResolvedValue {
+            raw_value: "brel".to_string(),
+            resolved_value: "Jacques Brel".to_string(),
+            range: 16..20,
+        }]
+    );
 
     assert_eq!(
         resolver.run("je veux ecouter les rolling stones").unwrap(),
         vec![
             ResolvedValue {
-                raw_value: "je".to_string(),
-                resolved_value: "Je Suis Animal".to_string(),
-                range: 0..2,
-            },
-            ResolvedValue {
-                resolved_value: "Les Paul".to_string(),
+                resolved_value: "Les Enfoirés".to_string(),
                 range: 16..19,
                 raw_value: "les".to_string(),
             },

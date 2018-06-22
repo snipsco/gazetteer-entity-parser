@@ -1,7 +1,7 @@
+use data::InternalEntityValue;
+use data::Gazetteer;
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX};
-use data::EntityValue;
-use data::Gazetteer;
 use errors::SnipsResolverResult;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
@@ -26,7 +26,7 @@ pub struct ResolvedValue {
 impl Resolver {
     /// Create an empty resolver. Its resolver has a single, start state. Its symbol table has
     /// epsilon and a skip symbol
-    pub fn new(decoding_threshold: f32) -> SnipsResolverResult<Resolver> {
+    fn new(decoding_threshold: f32) -> SnipsResolverResult<Resolver> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
         let start_state = fst.add_state();
@@ -55,7 +55,7 @@ impl Resolver {
     /// chunks of text (see `build_input_fst`).
     fn make_bottleneck(
         &mut self,
-        verbalized_value: &String,
+        verbalized_value: &str,
         weight_by_token: f32,
     ) -> SnipsResolverResult<i32> {
         let start_state = self.fst.start();
@@ -81,7 +81,7 @@ impl Resolver {
     fn make_value_transducer(
         &mut self,
         mut current_head: i32,
-        entity_value: &EntityValue,
+        entity_value: &InternalEntityValue,
         weight_by_token: f32,
     ) -> SnipsResolverResult<()> {
         let mut next_head: i32;
@@ -114,22 +114,27 @@ impl Resolver {
     /// Add a single entity value to the resolver. This function is kept private to promote
     /// creating the resolver with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &EntityValue) -> SnipsResolverResult<()> {
+    fn add_value(&mut self, entity_value: &InternalEntityValue) -> SnipsResolverResult<()> {
         // compute weight for each arc based on size of string
-        let n_tokens = whitespace_tokenizer(&entity_value.raw_value).count();
-        let weight_by_token = 1.0 / (n_tokens as f32);
+        let weight_by_token = 1.0;
         let current_head = self.make_bottleneck(&entity_value.raw_value, -weight_by_token)?;
         self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
         Ok(())
     }
 
-    /// Create a resolver from a gazetteer. This function adds the entity values from the gazetteer
+    /// Create a resolver from a Gazetteer, which is represents an ordered list of entity values.
+    /// This function adds the entity values from the gazetteer
     /// and performs several optimizations on the resulting FST. This is the recommended method
-    /// to define a resolver
-    pub fn from_gazetteer(gazetteer: &Gazetteer, threshold: f32) -> SnipsResolverResult<Resolver> {
-        let mut resolver = Resolver::new(threshold)?;
-        for entity_value in &gazetteer.data {
-            resolver.add_value(&entity_value)?;
+    /// to define a resolver. The `resolver_threshold` argument sets the minimum fraction of words
+    /// to match for an entity to be resolved.
+    pub fn from_gazetteer(gazetteer: &Gazetteer, resolver_threshold: f32) -> SnipsResolverResult<Resolver> {
+        let mut resolver = Resolver::new(resolver_threshold)?;
+        for (rank, entity_value) in gazetteer.data.iter().enumerate() {
+            resolver.add_value(
+                &InternalEntityValue::new (
+                    entity_value,
+                    rank
+                ))?;
         }
         resolver.fst.optimize();
         resolver.fst.closure_plus();
@@ -257,7 +262,6 @@ impl Resolver {
 
     /// Resolve the input string `input`
     pub fn run(&self, input: &str) -> SnipsResolverResult<Vec<ResolvedValue>> {
-        // FIXME: implement logic of ranking of artists
 
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
         // Compose with the resolver fst
@@ -276,28 +280,26 @@ impl Resolver {
 #[cfg(test)]
 extern crate serde_json;
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
+    #[allow(unused_imports)]
+    use data::EntityValue;
     #[test]
-    // #[ignore]
     fn test_resolver() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "Blink-182".to_string(),
             raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
@@ -368,24 +370,24 @@ mod tests {
 
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
-            weight: 500.0,
             resolved_value: "Jacques Brel".to_string(),
             raw_value: "jacques brel".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 100.0,
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 10000.0,
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 23000.0,
             resolved_value: "Daniel Brel".to_string(),
             raw_value: "daniel brel".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Jacques".to_string(),
+            raw_value: "jacques".to_string(),
         });
         let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
 
@@ -428,13 +430,21 @@ mod tests {
                 range: 16..27,
             }]
         );
+        let resolved = resolver.run("je veux écouter jacques").unwrap();
+        assert_eq!(
+            resolved,
+            vec![ResolvedValue {
+                raw_value: "jacques".to_string(),
+                resolved_value: "Jacques".to_string(),
+                range: 16..23,
+            }]
+        );
     }
 
     #[test]
     fn test_resolver_with_restart() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
-            weight: 1.0 / 100.0,
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
@@ -450,10 +460,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_resolver_with_mixed_ordered_entity() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
-            weight: 1.0 / 100.0,
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
@@ -465,30 +475,24 @@ mod tests {
 
     #[test]
     fn test_resolver_with_threshold() {
-        // TODO: implement this test
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "Blink-182".to_string(),
             raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
         gazetteer.add(EntityValue {
-            weight: 1.0,
             resolved_value: "Les Enfoirés".to_string(),
             raw_value: "les enfoirés".to_string(),
         });
