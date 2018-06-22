@@ -7,16 +7,15 @@ extern crate serde_json;
 
 // use itertools::Itertools;
 
-use std::fs::File;
-use rand::Rng;
 use rand::thread_rng;
+use rand::Rng;
+use std::fs::File;
 // use rand::prelude::*;
-use nr_builtin_resolver::data::{ EntityValue, Gazetteer };
-use nr_builtin_resolver::resolver::{Resolver, ResolvedValue};
+use nr_builtin_resolver::data::{EntityValue, Gazetteer};
+use nr_builtin_resolver::resolver::{ResolvedValue, Resolver};
 use std::path::Path;
 
 use criterion::Criterion;
-
 
 // fn generate_random_string() -> String {
 //     let mut rng = thread_rng();
@@ -31,7 +30,9 @@ use criterion::Criterion;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut gazetteer = Gazetteer { data: Vec::new() };
-    let file = File::open("/Users/alaasaade/Documents/snips-grammars/snips_grammars/resources/fr/music/artist.json").unwrap();
+    let file = File::open(
+        "/Users/alaasaade/Documents/snips-grammars/snips_grammars/resources/fr/music/artist.json",
+    ).unwrap();
     let mut data: Vec<String> = serde_json::from_reader(file).unwrap();
     // for idx in 1..10 {
     //     println!("{:?}", data.get(idx));
@@ -45,7 +46,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         gazetteer.add(EntityValue {
             weight: 1.0,
             resolved_value: val.clone(),
-            raw_value: val.clone().to_lowercase()
+            raw_value: val.clone().to_lowercase(),
         })
     }
     // gazetteer.add(EntityValue {
@@ -75,14 +76,26 @@ fn criterion_benchmark(c: &mut Criterion) {
     // assert_eq!(resolver.run("veux ecouter rolling stones").unwrap(),             vec!(
     //     ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 13..27}));
 
-        assert_eq!(
-            resolver.run("je veux ecouter les rolling stones").unwrap(),
-            vec!(
-                ResolvedValue{ raw_value: "je".to_string(), resolved_value: "Je Suis Animal".to_string(), range: 0..2},
-                ResolvedValue { resolved_value: "Les Paul".to_string(), range: 16..19, raw_value: "les".to_string() },
-                ResolvedValue{ raw_value: "rolling stones".to_string(), resolved_value: "The Rolling Stones".to_string(), range: 20..34}
-            )
-        );
+    assert_eq!(
+        resolver.run("je veux ecouter les rolling stones").unwrap(),
+        vec![
+            ResolvedValue {
+                raw_value: "je".to_string(),
+                resolved_value: "Je Suis Animal".to_string(),
+                range: 0..2,
+            },
+            ResolvedValue {
+                resolved_value: "Les Paul".to_string(),
+                range: 16..19,
+                raw_value: "les".to_string(),
+            },
+            ResolvedValue {
+                raw_value: "rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 20..34,
+            },
+        ]
+    );
 
     // assert_eq!(resolver.run("veux ecouter brel".to_string()).unwrap(), "<skip> <skip> Jacques_Brel");
     // assert_eq!(resolver.run("the rolling".to_string()).unwrap(), "<skip> The_Rolling_Stones");
@@ -91,11 +104,17 @@ fn criterion_benchmark(c: &mut Criterion) {
     //     println!("{:?}", resolver.run("the stones".to_string()).unwrap());
     // }
     let resolver_1 = Resolver::from_gazetteer(&gazetteer, 0.1).unwrap();
-    c.bench_function("Resolve je veux ecouter les stones", move |b| b.iter(|| resolver_1.run("je veux ecouter les stones")));
+    c.bench_function("Resolve je veux ecouter les stones", move |b| {
+        b.iter(|| resolver_1.run("je veux ecouter les stones"))
+    });
     let resolver_1 = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
-    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver_1.run("ecouter the stones")));
+    c.bench_function("Resolve the stones", move |b| {
+        b.iter(|| resolver_1.run("ecouter the stones"))
+    });
     let resolver_2 = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
-    c.bench_function("Resolve the rolling", move |b| b.iter(|| resolver_2.run("the rolling")));
+    c.bench_function("Resolve the rolling", move |b| {
+        b.iter(|| resolver_2.run("the rolling"))
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);

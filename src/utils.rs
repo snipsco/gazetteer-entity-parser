@@ -10,7 +10,9 @@ pub fn fst_format_resolved_value(string: &str) -> String {
 
 /// This function is the inverse of fst_format_resolved_value. It parses the output of the resolver fst to resturn the resolved value
 pub fn fst_unformat_resolved_value(string: &str) -> String {
-    string.replace(&format!("{}:", RESOLVED_SYMBOL), "").replace("_", " ")
+    string
+        .replace(&format!("{}:", RESOLVED_SYMBOL), "")
+        .replace("_", " ")
 }
 
 pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
@@ -23,12 +25,16 @@ pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool
 pub struct WhitespaceTokenizer<'a> {
     current_idx: usize,
     char_iterator: Chars<'a>,
-    is_done: bool
+    is_done: bool,
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
 pub fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
-    WhitespaceTokenizer{ char_iterator: string.chars(), is_done: false, current_idx: 0 }
+    WhitespaceTokenizer {
+        char_iterator: string.chars(),
+        is_done: false,
+        current_idx: 0,
+    }
 }
 
 /// Iterator that outputs the next token along with its range in the input string
@@ -37,7 +43,7 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
 
     fn next(&mut self) -> Option<(Range<usize>, String)> {
         if self.is_done {
-            return None
+            return None;
         }
         let mut next_char: char;
         // Absorb any number of whitespaces from where we are
@@ -54,14 +60,14 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
             }
         }
         // Start a new token
-        let start_token_idx = self.current_idx - 1;  // we've overshot the start of the token
-        let mut new_token: Vec<char> = vec!(next_char);
+        let start_token_idx = self.current_idx - 1; // we've overshot the start of the token
+        let mut new_token: Vec<char> = vec![next_char];
         // Absorb any number of non-whitespaces and put them in current token
         loop {
             match self.char_iterator.next() {
                 None => {
                     self.is_done = true;
-                },
+                }
                 Some(_char) => {
                     next_char = _char;
                 }
@@ -74,7 +80,10 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
             }
         }
         let end_token_idx = self.current_idx - 1; // Overshot end of token
-        Some((start_token_idx..end_token_idx, new_token.into_iter().collect()))
+        Some((
+            start_token_idx..end_token_idx,
+            new_token.into_iter().collect(),
+        ))
     }
 }
 
@@ -84,8 +93,14 @@ mod tests {
 
     #[test]
     fn fst_format_works() {
-        assert_eq!(fst_format_resolved_value("hello world"), "__RESOLVED__:hello_world");
-        assert_eq!(fst_unformat_resolved_value("__RESOLVED__:hello_world"), "hello world");
+        assert_eq!(
+            fst_format_resolved_value("hello world"),
+            "__RESOLVED__:hello_world"
+        );
+        assert_eq!(
+            fst_unformat_resolved_value("__RESOLVED__:hello_world"),
+            "hello world"
+        );
     }
 
     #[test]
@@ -106,7 +121,10 @@ mod tests {
 
         let mut tokenizer = whitespace_tokenizer("дра \t नमस्ते");
         assert_eq!(tokenizer.next(), Some((0..3, "дра".to_string())));
-        assert_eq!(tokenizer.next(), Some((6..12, "नमस्ते".to_string())));
+        assert_eq!(
+            tokenizer.next(),
+            Some((6..12, "नमस्ते".to_string()))
+        );
 
         let mut tokenizer = whitespace_tokenizer("je veux écouter les rolling stones");
         assert_eq!(tokenizer.next(), Some((0..2, "je".to_string())));
