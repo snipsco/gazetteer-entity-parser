@@ -50,7 +50,9 @@ impl Resolver {
     /// is matched. This allows to disable many branches during the composition. It returns the
     /// state at the output of the bottleneck. On the left, the bottleneck is connected to the
     /// start state of the fst. Each token is consumed with weight `weight_by_token` and is
-    /// returned. The bottleneck starts by consuming a RESTART symbol.
+    /// returned. The bottleneck starts by consuming a RESTART symbol or nothing. The presence
+    /// of the restart symbol allows forcing the resolver to restart between non-contiguous
+    /// chunks of text (see `build_input_fst`).
     fn make_bottleneck(
         &mut self,
         verbalized_value: &String,
@@ -59,6 +61,7 @@ impl Resolver {
         let start_state = self.fst.start();
         let current_head = self.fst.add_state();
         self.fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
+        self.fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, current_head);
         let next_head = self.fst.add_state();
         for (_, token) in whitespace_tokenizer(verbalized_value) {
             let token_idx = self.symbol_table.add_symbol(&token)?;
@@ -142,23 +145,23 @@ impl Resolver {
         let mut tokens_ranges: Vec<Range<usize>> = vec![];
         let mut current_head = input_fst.add_state();
         input_fst.set_start(current_head);
-        let mut restart_inserted: bool = false;
+        let mut restart_to_be_inserted: bool = false;
         for (token_range, token) in whitespace_tokenizer(input) {
             match self.symbol_table.find_symbol(&token)? {
                 Some(value) => {
+                    if !restart_to_be_inserted {
+                        let next_head = input_fst.add_state();
+                        input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
+                        current_head = next_head;
+                        restart_to_be_inserted = true;
+                    }
                     let next_head = input_fst.add_state();
                     input_fst.add_arc(current_head, value, value, 0.0, next_head);
                     tokens_ranges.push(token_range);
                     current_head = next_head;
-                    restart_inserted = false;
                 }
                 None => {
-                    if !restart_inserted {
-                        let next_head = input_fst.add_state();
-                        input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
-                        current_head = next_head;
-                        restart_inserted = true;
-                    }
+                    restart_to_be_inserted = false;
                     // if the word is not in the symbol table, there is no
                     // chance of matching it: we skip
                     continue;
