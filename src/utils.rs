@@ -1,6 +1,7 @@
 use constants::RESOLVED_SYMBOL;
 use std::ops::Range;
 use std::str::Chars;
+use std::iter::Peekable;
 
 /// This function formats the resolved value output by the resolver fst. It's inverse is
 /// fst_unformat_resolved_value
@@ -25,15 +26,13 @@ pub(crate) fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) 
 #[derive(Debug)]
 pub(crate) struct WhitespaceTokenizer<'a> {
     current_idx: usize,
-    char_iterator: Chars<'a>,
-    is_done: bool,
+    char_iterator: Peekable<Chars<'a>>
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
 pub(crate) fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
     WhitespaceTokenizer {
-        char_iterator: string.chars(),
-        is_done: false,
+        char_iterator: string.chars().peekable(),
         current_idx: 0,
     }
 }
@@ -43,44 +42,30 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
     type Item = (Range<usize>, String);
 
     fn next(&mut self) -> Option<(Range<usize>, String)> {
-        if self.is_done {
-            return None;
-        }
-        let mut next_char: char;
         // Absorb any number of whitespaces from where we are
         loop {
-            match self.char_iterator.next() {
+            match self.char_iterator.peek() {
                 None => return None,
-                Some(_char) => {
-                    next_char = _char;
-                    self.current_idx += 1;
-                }
+                Some(c) if !c.is_whitespace() => break,
+                Some(_) => {}
             }
-            if !next_char.is_whitespace() {
-                break;
-            }
+            self.char_iterator.next();
+            self.current_idx += 1;
         }
         // Start a new token
-        let start_token_idx = self.current_idx - 1; // we've overshot the start of the token
-        let mut new_token: Vec<char> = vec![next_char];
+        let start_token_idx = self.current_idx; // we've overshot the start of the token
+        let mut new_token: Vec<char> = vec![];
         // Absorb any number of non-whitespaces and put them in current token
         loop {
-            match self.char_iterator.next() {
-                None => {
-                    self.is_done = true;
-                }
-                Some(_char) => {
-                    next_char = _char;
-                }
+            match self.char_iterator.peek() {
+                None => break,
+                Some(c) if !c.is_whitespace() => {new_token.push(*c)},
+                Some(_) => break,
             }
+            self.char_iterator.next();
             self.current_idx += 1;
-            if next_char.is_whitespace() || self.is_done {
-                break;
-            } else {
-                new_token.push(next_char);
-            }
         }
-        let end_token_idx = self.current_idx - 1; // Overshot end of token
+        let end_token_idx = self.current_idx; // Overshot end of token
         Some((
             start_token_idx..end_token_idx,
             new_token.into_iter().collect(),
