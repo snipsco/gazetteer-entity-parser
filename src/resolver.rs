@@ -197,16 +197,14 @@ impl Resolver {
             true,
             true,
         );
-        match path_iterator.next() {
-            None => return Ok(vec![]), // this should not happen because the shortest path should contain at least a path
-            Some(value) => {
-                return Ok(Resolver::format_string_path(
-                    &value?,
-                    &tokens_range,
-                    self.decoding_threshold,
-                )?)
-            }
-        }
+
+        let path = path_iterator.next().ok_or_else(|| format_err!("Empty string path iterator"))??;
+        Ok(Resolver::format_string_path(
+            &path,
+            &tokens_range,
+            self.decoding_threshold,
+        )?)
+
     }
 
     /// Format the shortest path as a vec of ResolvedValue
