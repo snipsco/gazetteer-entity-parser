@@ -28,7 +28,7 @@ impl<'a> InternalEntityValue<'a> {
     }
 }
 
-/// Struct holding a gazetteer, i.e. an ordered list of entity values to be added to the resolver. The values should be added in order of popularity or probability, with the most popular value added first (see Resolver).
+/// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the resolver. The values should be added in order of popularity or probability, with the most popular value added first (see Resolver).
 #[derive(Debug)]
 pub struct Gazetteer {
     pub data: Vec<EntityValue>,
@@ -42,7 +42,7 @@ impl Gazetteer {
     }
 
     /// Instanciate a Gazetteer from a json file containing an ordered list of entries of the form:
-    /// ```
+    /// ```json
     /// {
     ///     "raw_value": "the strokes",
     ///     "resolved_value": "The Strokes"
@@ -62,4 +62,5 @@ impl Gazetteer {
         };
         Ok(Gazetteer{data})
     }
+
 }
