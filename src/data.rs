@@ -48,7 +48,7 @@ impl Gazetteer {
     ///     "resolved_value": "The Strokes"
     /// }
     /// ```
-    pub fn from_json(filename: &Path, limit: Option<usize>) -> SnipsResolverResult<Gazetteer> {
+    pub fn from_json<P: AsRef<Path>>(filename: P, limit: Option<usize>) -> SnipsResolverResult<Gazetteer> {
         let file = File::open(filename)?;
         let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
         match limit {
