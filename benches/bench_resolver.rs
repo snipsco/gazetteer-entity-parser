@@ -2,65 +2,59 @@
 extern crate criterion;
 extern crate nr_builtin_resolver;
 extern crate rand;
-// extern crate itertools;
-
-// use itertools::Itertools;
 
 use rand::Rng;
-use rand::thread_rng;
-// use rand::prelude::*;
-use nr_builtin_resolver::data::{ EntityValue, Gazetteer };
-use nr_builtin_resolver::resolver::Resolver;
-use std::path::Path;
+use rand::{thread_rng};
+use rand::seq::sample_iter;
+use rand::distributions::Alphanumeric;
+use nr_builtin_resolver::{Resolver, Gazetteer, EntityValue};
 
 use criterion::Criterion;
 
+/// Function generating a random string representing a single word of various length
+fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
+    let n_char = rng.gen_range(3, 8);
+    rng.sample_iter(&Alphanumeric).take(n_char).collect()
+}
 
-fn generate_random_string() -> String {
-    let mut rng = thread_rng();
-    let n_words = rng.gen_range(1, 4);
-    // let n_char = rng.gen_range(3, 8);
-    // (1..n_char).map(|_| rng.gen::<char>()).collect()
-    (1..n_words + 1).map(|_| {
-        let n_char = rng.gen_range(3, 8);
-        rng.gen_ascii_chars().take(n_char).collect()
-    }).collect::<Vec<String>>().join(" ")
+
+/// Random string generator with a bit of redundancy to make it harder for the resolver
+struct RandomStringGenerator {
+    unique_strings: Vec<String>,
+    rng: rand::ThreadRng
+}
+
+impl RandomStringGenerator {
+    fn new(n_unique_strings: usize) -> RandomStringGenerator {
+        let mut rng = thread_rng();
+        let unique_strings = (0..n_unique_strings).map(|_| generate_random_string(&mut rng)).collect();
+        RandomStringGenerator { unique_strings, rng: rng }
+    }
+
+    fn generate(&mut self) -> String {
+        let n_words = self.rng.gen_range(1, 4);
+        let mut s: Vec<String> = vec![];
+        for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap() {
+            s.push(self.unique_strings.get(sample_idx).unwrap().to_string())
+        }
+        s.join(" ")
+    }
+
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let mut rsg = RandomStringGenerator::new(100);
     let mut gazetteer = Gazetteer { data: Vec::new() };
-    gazetteer.add(EntityValue {
-        weight: 1.0,
-        raw_value: "The Rolling Stones".to_string(),
-        verbalized_value: "the rolling stones".to_string()
-    });
-    gazetteer.add(EntityValue {
-        weight: 1.0,
-        raw_value: "The Flying Stones".to_string(),
-        verbalized_value: "the flying stones".to_string()
-    });
-    for _ in 1..10000 {
-        let name = generate_random_string();
-        // println!("{:?}", name);
-        let verbalized = name.to_lowercase();
+    for _ in 1..100000 {
+        let val = rsg.generate();
         gazetteer.add(EntityValue {
-            weight: 1.0,
-            raw_value: name,
-            verbalized_value: verbalized,
+            raw_value: val.clone(),
+            resolved_value: val.to_lowercase(),
         });
     }
-    // println!("{:#?}", gazetteer);
-    let resolver = Resolver::from_gazetteer(&gazetteer).unwrap();
-    // resolver.symbol_table.write_file(Path::new("bench_symt"), false).unwrap();
-    assert_eq!(resolver.run("the rolling".to_string()).unwrap(), "The Rolling Stones");
-    assert_eq!(resolver.run("the stones".to_string()).unwrap(), "");
-    for _idx in 1..10 {
-        println!("{:?}", resolver.run("the stones".to_string()).unwrap());
-    }
-    let resolver_1 = Resolver::from_gazetteer(&gazetteer).unwrap();
-    c.bench_function("Resolve the stones", move |b| b.iter(|| resolver_1.run("the stones".to_string())));
-    let resolver_2 = Resolver::from_gazetteer(&gazetteer).unwrap();
-    c.bench_function("Resolve the rolling", move |b| b.iter(|| resolver_2.run("the rolling".to_string())));
+    let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+
+    c.bench_function("Resolve random value", move |b| b.iter(|| resolver.run(&rsg.generate())));
 }
 
 criterion_group!(benches, criterion_benchmark);
