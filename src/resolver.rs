@@ -229,13 +229,9 @@ impl Resolver {
                 continue;
             }
             if advance_input {
-                let tentative_new_token = input_iterator.next();
-                match tentative_new_token {
-                    Some((_, value)) => {
-                        current_input_token = value;
-                        current_input_token_idx += 1;
-                    }
-                    None => {}
+                if let Some((_, value)) = input_iterator.next() {
+                    current_input_token = value;
+                    current_input_token_idx += 1;
                 }
             }
             if current_input_token != token {
