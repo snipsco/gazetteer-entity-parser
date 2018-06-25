@@ -1,4 +1,4 @@
-use data::InternalEntityValue;
+use data::EntityValue;
 use data::Gazetteer;
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX};
@@ -9,6 +9,24 @@ use snips_fst::{fst, operations};
 use std::ops::Range;
 use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
+
+#[derive(Debug)]
+pub struct InternalEntityValue<'a> {
+    pub weight: f32,
+    pub resolved_value: &'a str,
+    pub raw_value: &'a str
+}
+
+impl<'a> InternalEntityValue<'a> {
+    pub fn new(entity_value: &'a EntityValue, rank: usize) -> InternalEntityValue {
+        InternalEntityValue {
+            resolved_value: &entity_value.resolved_value,
+            raw_value: &entity_value.raw_value,
+            weight: 1.0 - 1.0 / (1.0 + rank as f32)  // Adding 1 ensures rank is > 0
+        }
+    }
+}
+
 
 /// Struct representing the resolver. The `fst` attribute holds the finite state transducer representing the logic of the transducer, and its symbol table is held by `symbol_table`. `decoding_threshold` is the minimum fraction of words to match for an entity to be resolved.
 /// The Resolver will match the longest possible contiguous substrings of a query that match entity values.
