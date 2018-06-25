@@ -77,7 +77,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // for _idx in 1..10 {
     //     println!("{:?}", resolver.run("the stones".to_string()).unwrap());
     // }
-    let resolver_1 = Resolver::from_gazetteer(&gazetteer, 0.1).unwrap();
+    let resolver_1 = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
     c.bench_function("Resolve je veux ecouter les stones", move |b| {
         b.iter(|| resolver_1.run("je veux ecouter les stones"))
     });
