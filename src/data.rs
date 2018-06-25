@@ -5,10 +5,10 @@ use serde_json;
 use errors::SnipsResolverResult;
 
 #[derive(Debug)]
-pub(crate) struct InternalEntityValue<'a> {
-    pub(crate) weight: f32,
-    pub(crate) resolved_value: &'a str,
-    pub(crate) raw_value: &'a str
+pub struct InternalEntityValue<'a> {
+    pub weight: f32,
+    pub resolved_value: &'a str,
+    pub raw_value: &'a str
 }
 
 /// Struct representing the value of an entity to be added to the resolver
@@ -19,7 +19,7 @@ pub struct EntityValue {
 }
 
 impl<'a> InternalEntityValue<'a> {
-    pub(crate) fn new(entity_value: &'a EntityValue, rank: usize) -> InternalEntityValue {
+    pub fn new(entity_value: &'a EntityValue, rank: usize) -> InternalEntityValue {
         InternalEntityValue {
             resolved_value: &entity_value.resolved_value,
             raw_value: &entity_value.raw_value,

@@ -14,9 +14,9 @@ use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_va
 /// The Resolver will match the longest possible contiguous substrings of a query that match entity values.
 /// The order in which the values are added to the resolver matters: In case of ambiguity between two resolutions, the Resolver will output the value that was added first (see Gazetteer).
 pub struct Resolver {
-    pub fst: fst::Fst,
-    pub symbol_table: SymbolTable,
-    pub decoding_threshold: f32,
+    fst: fst::Fst,
+    symbol_table: SymbolTable,
+    decoding_threshold: f32,
 }
 
 /// Struct holding an individual resolution result. The result of a run of the resolver on a query will be a vector of ResolvedValue. The `range` attribute is the range of the characters composing the raw value in the input query.

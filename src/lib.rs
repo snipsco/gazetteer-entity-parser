@@ -9,9 +9,11 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 
-pub mod constants;
-pub mod data;
-pub mod errors;
-pub mod resolver;
-pub use resolver::Resolver;
+mod constants;
+mod data;
+mod resolver;
 mod utils;
+
+pub mod errors;
+pub use resolver::{Resolver, ResolvedValue};
+pub use data::{Gazetteer, EntityValue};
