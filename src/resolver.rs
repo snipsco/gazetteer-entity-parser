@@ -10,12 +10,16 @@ use std::ops::Range;
 use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
 
+/// Struct representing the resolver. The `fst` attribute holds the finite state transducer representing the logic of the transducer, and its symbol table is held by `symbol_table`. `decoding_threshold` is the minimum fraction of words to match for an entity to be resolved.
+/// The Resolver will match the longest possible contiguous substrings of a query that match entity values.
+/// The order in which the values are added to the resolver matters: In case of ambiguity between two resolutions, the Resolver will output the value that was added first (see Gazetteer).
 pub struct Resolver {
     pub fst: fst::Fst,
     pub symbol_table: SymbolTable,
     pub decoding_threshold: f32,
 }
 
+/// Struct holding an individual resolution result. The result of a run of the resolver on a query will be a vector of ResolvedValue. The `range` attribute is the range of the characters composing the raw value in the input query.
 #[derive(Debug, PartialEq)]
 pub struct ResolvedValue {
     pub resolved_value: String,
@@ -122,7 +126,7 @@ impl Resolver {
         Ok(())
     }
 
-    /// Create a resolver from a Gazetteer, which is represents an ordered list of entity values.
+    /// Create a resolver from a Gazetteer, which represents an ordered list of entity values.
     /// This function adds the entity values from the gazetteer
     /// and performs several optimizations on the resulting FST. This is the recommended method
     /// to define a resolver. The `resolver_threshold` argument sets the minimum fraction of words
@@ -180,6 +184,7 @@ impl Resolver {
         Ok((input_fst, tokens_ranges))
     }
 
+    /// Decode the single shortest path
     fn decode_shortest_path(
         &self,
         shortest_path: &fst::Fst,
@@ -204,6 +209,7 @@ impl Resolver {
         }
     }
 
+    /// Format the shortest path as a vec of ResolvedValue
     fn format_string_path(
         string_path: &StringPath,
         tokens_range: &Vec<Range<usize>>,
@@ -260,7 +266,7 @@ impl Resolver {
         Ok(resolved_values)
     }
 
-    /// Resolve the input string `input`
+    /// Resolve the input string `input` to a vec of ResolvedValue
     pub fn run(&self, input: &str) -> SnipsResolverResult<Vec<ResolvedValue>> {
 
         let (input_fst, tokens_range) = self.build_input_fst(input)?;

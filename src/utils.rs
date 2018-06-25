@@ -4,32 +4,33 @@ use std::str::Chars;
 
 /// This function formats the resolved value output by the resolver fst. It's inverse is
 /// fst_unformat_resolved_value
-pub fn fst_format_resolved_value(string: &str) -> String {
+pub(crate) fn fst_format_resolved_value(string: &str) -> String {
     format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", "_"))
 }
 
 /// This function is the inverse of fst_format_resolved_value. It parses the output of the resolver fst to resturn the resolved value
-pub fn fst_unformat_resolved_value(string: &str) -> String {
+pub(crate) fn fst_unformat_resolved_value(string: &str) -> String {
     string
         .replace(&format!("{}:", RESOLVED_SYMBOL), "")
         .replace("_", " ")
 }
 
-pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
+/// Check whether the best resolution matches the threshold condition or not
+pub(crate) fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
     // we use n_skip - 1 because the bottleneck takes away one good token
     // that ends uo being skipped
     (n_decoded as f32) / (n_decoded as f32 + n_skips as f32 - 1.0) >= threshold
 }
 
 #[derive(Debug)]
-pub struct WhitespaceTokenizer<'a> {
+pub(crate) struct WhitespaceTokenizer<'a> {
     current_idx: usize,
     char_iterator: Chars<'a>,
     is_done: bool,
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
-pub fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
+pub(crate) fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
     WhitespaceTokenizer {
         char_iterator: string.chars(),
         is_done: false,
