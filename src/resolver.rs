@@ -250,8 +250,8 @@ impl Resolver {
                 }
                 // Reinitialize accumulators
                 n_skips = 0;
-                input_value_until_now = vec![];
-                current_ranges = vec![];
+                input_value_until_now.clear();
+                current_ranges.clear();
                 advance_input = false;
             } else {
                 input_value_until_now.push(token);
