@@ -1,1 +1,1 @@
-pub type SnipsParserResult<T> = ::std::result::Result<T, ::failure::Error>;
+pub type GazetteerParserResult<T> = ::std::result::Result<T, ::failure::Error>;

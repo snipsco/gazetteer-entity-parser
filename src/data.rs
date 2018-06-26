@@ -2,7 +2,7 @@ use std::path::Path;
 use std::fs::File;
 use serde_json;
 
-use errors::SnipsParserResult;
+use errors::GazetteerParserResult;
 
 /// Struct representing the value of an entity to be added to the parser
 #[derive(Debug, Deserialize)]
@@ -31,7 +31,7 @@ impl Gazetteer {
     ///     "resolved_value": "The Strokes"
     /// }
     /// ```
-    pub fn from_json<P: AsRef<Path>>(filename: P, limit: Option<usize>) -> SnipsParserResult<Gazetteer> {
+    pub fn from_json<P: AsRef<Path>>(filename: P, limit: Option<usize>) -> GazetteerParserResult<Gazetteer> {
         let file = File::open(filename)?;
         let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
         match limit {

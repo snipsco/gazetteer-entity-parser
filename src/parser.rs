@@ -2,7 +2,7 @@ use data::EntityValue;
 use data::Gazetteer;
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX};
-use errors::SnipsParserResult;
+use errors::GazetteerParserResult;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
 use snips_fst::{fst, operations};
@@ -48,7 +48,7 @@ pub struct ParsedValue {
 impl Parser {
     /// Create an empty parser. Its parser has a single, start state. Its symbol table has
     /// epsilon and a skip symbol
-    fn new(decoding_threshold: f32) -> SnipsParserResult<Parser> {
+    fn new(decoding_threshold: f32) -> GazetteerParserResult<Parser> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
         let start_state = fst.add_state();
@@ -79,7 +79,7 @@ impl Parser {
         &mut self,
         verbalized_value: &str,
         weight_by_token: f32,
-    ) -> SnipsParserResult<i32> {
+    ) -> GazetteerParserResult<i32> {
         let start_state = self.fst.start();
         let current_head = self.fst.add_state();
         self.fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
@@ -105,7 +105,7 @@ impl Parser {
         mut current_head: i32,
         entity_value: &InternalEntityValue,
         weight_by_token: f32,
-    ) -> SnipsParserResult<()> {
+    ) -> GazetteerParserResult<()> {
         let mut next_head: i32;
         // First we consume the raw value
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
@@ -136,7 +136,7 @@ impl Parser {
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &InternalEntityValue) -> SnipsParserResult<()> {
+    fn add_value(&mut self, entity_value: &InternalEntityValue) -> GazetteerParserResult<()> {
         // compute weight for each arc based on size of string
         let weight_by_token = 1.0;
         let current_head = self.make_bottleneck(&entity_value.raw_value, -weight_by_token)?;
@@ -149,7 +149,7 @@ impl Parser {
     /// and performs several optimizations on the resulting FST. This is the recommended method
     /// to define a parser. The `parser_threshold` argument sets the minimum fraction of words
     /// to match for an entity to be parsed.
-    pub fn from_gazetteer(gazetteer: &Gazetteer, parser_threshold: f32) -> SnipsParserResult<Parser> {
+    pub fn from_gazetteer(gazetteer: &Gazetteer, parser_threshold: f32) -> GazetteerParserResult<Parser> {
         let mut parser = Parser::new(parser_threshold)?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(
@@ -166,7 +166,7 @@ impl Parser {
 
     /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
     // of the tokens composing it
-    fn build_input_fst(&self, input: &str) -> SnipsParserResult<(fst::Fst, Vec<Range<usize>>)> {
+    fn build_input_fst(&self, input: &str) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>)> {
         // build the input fst
         let mut input_fst = fst::Fst::new();
         let mut tokens_ranges: Vec<Range<usize>> = vec![];
@@ -207,7 +207,7 @@ impl Parser {
         &self,
         shortest_path: &fst::Fst,
         tokens_range: &Vec<Range<usize>>,
-    ) -> SnipsParserResult<Vec<ParsedValue>> {
+    ) -> GazetteerParserResult<Vec<ParsedValue>> {
         let mut path_iterator = StringPathsIterator::new(
             &shortest_path,
             &self.symbol_table,
@@ -230,7 +230,7 @@ impl Parser {
         string_path: &StringPath,
         tokens_range: &Vec<Range<usize>>,
         threshold: f32,
-    ) -> SnipsParserResult<Vec<ParsedValue>> {
+    ) -> GazetteerParserResult<Vec<ParsedValue>> {
         let mut input_iterator = whitespace_tokenizer(&string_path.istring);
         let mut parsed_values: Vec<ParsedValue> = vec![];
         let mut input_value_until_now: Vec<String> = vec![];
@@ -279,7 +279,7 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`
-    pub fn run(&self, input: &str) -> SnipsParserResult<Vec<ParsedValue>> {
+    pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
 
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
         // Compose with the parser fst
