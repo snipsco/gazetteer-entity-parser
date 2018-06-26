@@ -53,7 +53,7 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
             self.current_idx += 1;
         }
         // Start a new token
-        let start_token_idx = self.current_idx; // we've overshot the start of the token
+        let start_token_idx = self.current_idx;
         let mut new_token: Vec<char> = vec![];
         // Absorb any number of non-whitespaces and put them in current token
         loop {
@@ -65,7 +65,7 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
             self.char_iterator.next();
             self.current_idx += 1;
         }
-        let end_token_idx = self.current_idx; // Overshot end of token
+        let end_token_idx = self.current_idx;
         Some((
             start_token_idx..end_token_idx,
             new_token.into_iter().collect(),
