@@ -1,6 +1,6 @@
-use std::path::Path;
-use std::fs::File;
 use serde_json;
+use std::fs::File;
+use std::path::Path;
 
 use errors::GazetteerParserResult;
 
@@ -8,30 +8,36 @@ use errors::GazetteerParserResult;
 #[derive(Debug, Deserialize)]
 pub struct EntityValue {
     pub resolved_value: String,
-    pub raw_value: String
+    pub raw_value: String,
 }
 
-/// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the parser. The values should be added in order of popularity or probability, with the most popular value added first (see Parser).
+/// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the parser.
+/// The values should be added in order of popularity or probability, with the most popular value
+/// added first (see Parser).
 #[derive(Debug)]
 pub struct Gazetteer {
     pub data: Vec<EntityValue>,
 }
 
 impl Gazetteer {
-
     /// Add a single value to the Gazetteer
     pub fn add(&mut self, value: EntityValue) {
         self.data.push(value);
     }
 
-    /// Instanciate a Gazetteer from a json file containing an ordered list of entries of the form:
+    /// Instanciate a Gazetteer from a json file containing an ordered list of entries
+    /// of the form:
+    ///
     /// ```json
     /// {
     ///     "raw_value": "the strokes",
     ///     "resolved_value": "The Strokes"
     /// }
     /// ```
-    pub fn from_json<P: AsRef<Path>>(filename: P, limit: Option<usize>) -> GazetteerParserResult<Gazetteer> {
+    pub fn from_json<P: AsRef<Path>>(
+        filename: P,
+        limit: Option<usize>,
+    ) -> GazetteerParserResult<Gazetteer> {
         let file = File::open(filename)?;
         let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
         match limit {
@@ -43,7 +49,6 @@ impl Gazetteer {
                 data.truncate(value);
             }
         };
-        Ok(Gazetteer{data})
+        Ok(Gazetteer { data })
     }
-
 }

@@ -1,8 +1,8 @@
 use constants::RESOLVED_SYMBOL;
+use constants::SPACE_SYMBOL;
+use std::iter::Peekable;
 use std::ops::Range;
 use std::str::Chars;
-use std::iter::Peekable;
-use constants::SPACE_SYMBOL;
 
 /// This function formats the resolved value output by the parser fst, removing all
 /// whitespaces. Its inverse is fst_unformat_resolved_value.
@@ -27,7 +27,7 @@ pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool
 #[derive(Debug)]
 pub struct WhitespaceTokenizer<'a> {
     current_idx: usize,
-    char_iterator: Peekable<Chars<'a>>
+    char_iterator: Peekable<Chars<'a>>,
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
@@ -60,7 +60,7 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
         loop {
             match self.char_iterator.peek() {
                 None => break,
-                Some(c) if !c.is_whitespace() => {new_token.push(*c)},
+                Some(c) if !c.is_whitespace() => new_token.push(*c),
                 Some(_) => break,
             }
             self.char_iterator.next();
@@ -80,7 +80,6 @@ mod tests {
 
     #[test]
     fn fst_format_works() {
-
         for sample in vec!["hello world", "hello_ world", "hey\tyou"] {
             let formatted = fst_format_resolved_value(sample);
             print!("{:?}", formatted);

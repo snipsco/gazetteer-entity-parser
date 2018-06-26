@@ -1,7 +1,7 @@
-use data::EntityValue;
-use data::Gazetteer;
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX};
+use data::EntityValue;
+use data::Gazetteer;
 use errors::GazetteerParserResult;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
@@ -14,7 +14,7 @@ use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_va
 pub struct InternalEntityValue<'a> {
     pub weight: f32,
     pub resolved_value: &'a str,
-    pub raw_value: &'a str
+    pub raw_value: &'a str,
 }
 
 impl<'a> InternalEntityValue<'a> {
@@ -22,22 +22,26 @@ impl<'a> InternalEntityValue<'a> {
         InternalEntityValue {
             resolved_value: &entity_value.resolved_value,
             raw_value: &entity_value.raw_value,
-            weight: 1.0 - 1.0 / (1.0 + rank as f32)  // Adding 1 ensures rank is > 0
+            weight: 1.0 - 1.0 / (1.0 + rank as f32), // Adding 1 ensures rank is > 0
         }
     }
 }
 
-
-/// Struct representing the parser. The `fst` attribute holds the finite state transducer representing the logic of the transducer, and its symbol table is held by `symbol_table`. `decoding_threshold` is the minimum fraction of words to match for an entity to be parsed.
-/// The Parser will match the longest possible contiguous substrings of a query that match entity values.
-/// The order in which the values are added to the parser matters: In case of ambiguity between two parsings, the Parser will output the value that was added first (see Gazetteer).
+/// Struct representing the parser. The `fst` attribute holds the finite state transducer
+/// representing the logic of the transducer, and its symbol table is held by `symbol_table`.
+/// `decoding_threshold` is the minimum fraction of words to match for an entity to be parsed.
+/// The Parser will match the longest possible contiguous substrings of a query that match entity
+/// values. The order in which the values are added to the parser matters: In case of ambiguity
+/// between two parsings, the Parser will output the value that was added first (see Gazetteer).
 pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
     decoding_threshold: f32,
 }
 
-/// Struct holding an individual parsing result. The result of a run of the parser on a query will be a vector of ParsedValue. The `range` attribute is the range of the characters composing the raw value in the input query.
+/// Struct holding an individual parsing result. The result of a run of the parser on a query
+/// will be a vector of ParsedValue. The `range` attribute is the range of the characters
+/// composing the raw value in the input query.
 #[derive(Debug, PartialEq)]
 pub struct ParsedValue {
     pub resolved_value: String,
@@ -68,13 +72,13 @@ impl Parser {
         })
     }
 
-    /// This function returns a FST that checks that at least one of the words in `verbalized_value`
-    /// is matched. This allows to disable many branches during the composition. It returns the
-    /// state at the output of the bottleneck. On the left, the bottleneck is connected to the
-    /// start state of the fst. Each token is consumed with weight `weight_by_token` and is
-    /// returned. The bottleneck starts by consuming a RESTART symbol or nothing. The presence
-    /// of the restart symbol allows forcing the parser to restart between non-contiguous
-    /// chunks of text (see `build_input_fst`).
+    /// This function returns a FST that checks that at least one of the words in
+    /// `verbalized_value` is matched. This allows to disable many branches during the
+    /// composition. It returns the state at the output of the bottleneck. On the left, the
+    /// bottleneck is connected to the start state of the fst. Each token is consumed with weight
+    /// `weight_by_token` and is returned. The bottleneck starts by consuming a RESTART symbol or
+    /// nothing. The presence of the restart symbol allows forcing the parser to restart between
+    /// non-contiguous chunks of text (see `build_input_fst`).
     fn make_bottleneck(
         &mut self,
         verbalized_value: &str,
@@ -82,8 +86,10 @@ impl Parser {
     ) -> GazetteerParserResult<i32> {
         let start_state = self.fst.start();
         let current_head = self.fst.add_state();
-        self.fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
-        self.fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, current_head);
+        self.fst
+            .add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
+        self.fst
+            .add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, current_head);
         let next_head = self.fst.add_state();
         for (_, token) in whitespace_tokenizer(verbalized_value) {
             let token_idx = self.symbol_table.add_symbol(&token)?;
@@ -124,7 +130,8 @@ impl Parser {
         next_head = self.fst.add_state();
         // The symbol table cannot be deserialized if some symbols contain whitespaces. So we
         // replace them with underscores.
-        let token_idx = self.symbol_table
+        let token_idx = self
+            .symbol_table
             .add_symbol(&fst_format_resolved_value(&entity_value.resolved_value))?;
         self.fst
             .add_arc(current_head, EPS_IDX, token_idx, 0.0, next_head);
@@ -149,14 +156,13 @@ impl Parser {
     /// and performs several optimizations on the resulting FST. This is the recommended method
     /// to define a parser. The `parser_threshold` argument sets the minimum fraction of words
     /// to match for an entity to be parsed.
-    pub fn from_gazetteer(gazetteer: &Gazetteer, parser_threshold: f32) -> GazetteerParserResult<Parser> {
+    pub fn from_gazetteer(
+        gazetteer: &Gazetteer,
+        parser_threshold: f32,
+    ) -> GazetteerParserResult<Parser> {
         let mut parser = Parser::new(parser_threshold)?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            parser.add_value(
-                &InternalEntityValue::new (
-                    entity_value,
-                    rank
-                ))?;
+            parser.add_value(&InternalEntityValue::new(entity_value, rank))?;
         }
         parser.fst.optimize();
         parser.fst.closure_plus();
@@ -216,13 +222,14 @@ impl Parser {
             true,
         );
 
-        let path = path_iterator.next().ok_or_else(|| format_err!("Empty string path iterator"))??;
+        let path = path_iterator
+            .next()
+            .ok_or_else(|| format_err!("Empty string path iterator"))??;
         Ok(Parser::format_string_path(
             &path,
             &tokens_range,
             self.decoding_threshold,
         )?)
-
     }
 
     /// Format the shortest path as a vec of ParsedValue
@@ -269,9 +276,11 @@ impl Parser {
                 advance_input = false;
             } else {
                 input_value_until_now.push(token);
-                current_ranges.push(tokens_range
-                    .get(current_input_token_idx)
-                    .ok_or_else(|| format_err!("Decoding went wrong"))?);
+                current_ranges.push(
+                    tokens_range
+                        .get(current_input_token_idx)
+                        .ok_or_else(|| format_err!("Decoding went wrong"))?,
+                );
                 advance_input = true;
             }
         }
@@ -280,7 +289,6 @@ impl Parser {
 
     /// Parse the input string `input` and output a vec of `ParsedValue`
     pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
-
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
         // Compose with the parser fst
         let composition = operations::compose(&input_fst, &self.fst);
@@ -340,9 +348,7 @@ mod tests {
             ]
         );
 
-        parsed = parser
-            .run("je veux ecouter les \t rolling stones")
-            .unwrap();
+        parsed = parser.run("je veux ecouter les \t rolling stones").unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -471,10 +477,7 @@ mod tests {
         let parsed = parser
             .run("the music I want to listen to is rolling on stones")
             .unwrap();
-        assert_eq!(
-            parsed,
-            vec![]
-        );
+        assert_eq!(parsed, vec![]);
     }
 
     #[test]
