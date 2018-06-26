@@ -1,1 +1,1 @@
-pub type SnipsResolverResult<T> = ::std::result::Result<T, ::failure::Error>;
+pub type SnipsParserResult<T> = ::std::result::Result<T, ::failure::Error>;

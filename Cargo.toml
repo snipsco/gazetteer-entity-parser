@@ -1,5 +1,5 @@
 [package]
-name = "nr_builtin_resolver"
+name = "gazetteer-entity-parser"
 version = "0.1.0"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
 
@@ -15,5 +15,5 @@ criterion = "0.2"
 rand = "0.5"
 
 [[bench]]
-name = "bench_resolver"
+name = "bench_parser"
 harness = false

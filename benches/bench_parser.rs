@@ -1,13 +1,13 @@
 #[macro_use]
 extern crate criterion;
-extern crate nr_builtin_resolver;
+extern crate gazetteer_entity_parser;
 extern crate rand;
 
 use rand::Rng;
 use rand::{thread_rng};
 use rand::seq::sample_iter;
 use rand::distributions::Alphanumeric;
-use nr_builtin_resolver::{Resolver, Gazetteer, EntityValue};
+use gazetteer_entity_parser::{Parser, Gazetteer, EntityValue};
 
 use criterion::Criterion;
 
@@ -18,7 +18,7 @@ fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
 }
 
 
-/// Random string generator with a bit of redundancy to make it harder for the resolver
+/// Random string generator with a bit of redundancy to make it harder for the parser
 struct RandomStringGenerator {
     unique_strings: Vec<String>,
     rng: rand::ThreadRng
@@ -52,9 +52,9 @@ fn criterion_benchmark(c: &mut Criterion) {
             resolved_value: val.to_lowercase(),
         });
     }
-    let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+    let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
 
-    c.bench_function("Resolve random value", move |b| b.iter(|| resolver.run(&rsg.generate())));
+    c.bench_function("Parse random value", move |b| b.iter(|| parser.run(&rsg.generate())));
 }
 
 criterion_group!(benches, criterion_benchmark);

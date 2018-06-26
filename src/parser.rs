@@ -2,7 +2,7 @@ use data::EntityValue;
 use data::Gazetteer;
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX};
-use errors::SnipsResolverResult;
+use errors::SnipsParserResult;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
 use snips_fst::{fst, operations};
@@ -28,27 +28,27 @@ impl<'a> InternalEntityValue<'a> {
 }
 
 
-/// Struct representing the resolver. The `fst` attribute holds the finite state transducer representing the logic of the transducer, and its symbol table is held by `symbol_table`. `decoding_threshold` is the minimum fraction of words to match for an entity to be resolved.
-/// The Resolver will match the longest possible contiguous substrings of a query that match entity values.
-/// The order in which the values are added to the resolver matters: In case of ambiguity between two resolutions, the Resolver will output the value that was added first (see Gazetteer).
-pub struct Resolver {
+/// Struct representing the parser. The `fst` attribute holds the finite state transducer representing the logic of the transducer, and its symbol table is held by `symbol_table`. `decoding_threshold` is the minimum fraction of words to match for an entity to be parsed.
+/// The Parser will match the longest possible contiguous substrings of a query that match entity values.
+/// The order in which the values are added to the parser matters: In case of ambiguity between two parsings, the Parser will output the value that was added first (see Gazetteer).
+pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
     decoding_threshold: f32,
 }
 
-/// Struct holding an individual resolution result. The result of a run of the resolver on a query will be a vector of ResolvedValue. The `range` attribute is the range of the characters composing the raw value in the input query.
+/// Struct holding an individual parsing result. The result of a run of the parser on a query will be a vector of ParsedValue. The `range` attribute is the range of the characters composing the raw value in the input query.
 #[derive(Debug, PartialEq)]
-pub struct ResolvedValue {
+pub struct ParsedValue {
     pub resolved_value: String,
     pub range: Range<usize>, // character-level
     pub raw_value: String,
 }
 
-impl Resolver {
-    /// Create an empty resolver. Its resolver has a single, start state. Its symbol table has
+impl Parser {
+    /// Create an empty parser. Its parser has a single, start state. Its symbol table has
     /// epsilon and a skip symbol
-    fn new(decoding_threshold: f32) -> SnipsResolverResult<Resolver> {
+    fn new(decoding_threshold: f32) -> SnipsParserResult<Parser> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
         let start_state = fst.add_state();
@@ -61,7 +61,7 @@ impl Resolver {
         assert_eq!(skip_idx, SKIP_IDX);
         let restart_idx = symbol_table.add_symbol(RESTART)?;
         assert_eq!(restart_idx, RESTART_IDX);
-        Ok(Resolver {
+        Ok(Parser {
             fst,
             symbol_table,
             decoding_threshold,
@@ -73,13 +73,13 @@ impl Resolver {
     /// state at the output of the bottleneck. On the left, the bottleneck is connected to the
     /// start state of the fst. Each token is consumed with weight `weight_by_token` and is
     /// returned. The bottleneck starts by consuming a RESTART symbol or nothing. The presence
-    /// of the restart symbol allows forcing the resolver to restart between non-contiguous
+    /// of the restart symbol allows forcing the parser to restart between non-contiguous
     /// chunks of text (see `build_input_fst`).
     fn make_bottleneck(
         &mut self,
         verbalized_value: &str,
         weight_by_token: f32,
-    ) -> SnipsResolverResult<i32> {
+    ) -> SnipsParserResult<i32> {
         let start_state = self.fst.start();
         let current_head = self.fst.add_state();
         self.fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
@@ -105,7 +105,7 @@ impl Resolver {
         mut current_head: i32,
         entity_value: &InternalEntityValue,
         weight_by_token: f32,
-    ) -> SnipsResolverResult<()> {
+    ) -> SnipsParserResult<()> {
         let mut next_head: i32;
         // First we consume the raw value
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
@@ -133,10 +133,10 @@ impl Resolver {
         Ok(())
     }
 
-    /// Add a single entity value to the resolver. This function is kept private to promote
-    /// creating the resolver with a higher level function (such as `from_gazetteer`) that
+    /// Add a single entity value to the parser. This function is kept private to promote
+    /// creating the parser with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &InternalEntityValue) -> SnipsResolverResult<()> {
+    fn add_value(&mut self, entity_value: &InternalEntityValue) -> SnipsParserResult<()> {
         // compute weight for each arc based on size of string
         let weight_by_token = 1.0;
         let current_head = self.make_bottleneck(&entity_value.raw_value, -weight_by_token)?;
@@ -144,29 +144,29 @@ impl Resolver {
         Ok(())
     }
 
-    /// Create a resolver from a Gazetteer, which represents an ordered list of entity values.
+    /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
     /// This function adds the entity values from the gazetteer
     /// and performs several optimizations on the resulting FST. This is the recommended method
-    /// to define a resolver. The `resolver_threshold` argument sets the minimum fraction of words
-    /// to match for an entity to be resolved.
-    pub fn from_gazetteer(gazetteer: &Gazetteer, resolver_threshold: f32) -> SnipsResolverResult<Resolver> {
-        let mut resolver = Resolver::new(resolver_threshold)?;
+    /// to define a parser. The `parser_threshold` argument sets the minimum fraction of words
+    /// to match for an entity to be parsed.
+    pub fn from_gazetteer(gazetteer: &Gazetteer, parser_threshold: f32) -> SnipsParserResult<Parser> {
+        let mut parser = Parser::new(parser_threshold)?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            resolver.add_value(
+            parser.add_value(
                 &InternalEntityValue::new (
                     entity_value,
                     rank
                 ))?;
         }
-        resolver.fst.optimize();
-        resolver.fst.closure_plus();
-        resolver.fst.arc_sort(true);
-        Ok(resolver)
+        parser.fst.optimize();
+        parser.fst.closure_plus();
+        parser.fst.arc_sort(true);
+        Ok(parser)
     }
 
-    /// Create an input fst from a string to be resolved. Outputs the input fst and a vec of ranges
+    /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
     // of the tokens composing it
-    fn build_input_fst(&self, input: &str) -> SnipsResolverResult<(fst::Fst, Vec<Range<usize>>)> {
+    fn build_input_fst(&self, input: &str) -> SnipsParserResult<(fst::Fst, Vec<Range<usize>>)> {
         // build the input fst
         let mut input_fst = fst::Fst::new();
         let mut tokens_ranges: Vec<Range<usize>> = vec![];
@@ -207,7 +207,7 @@ impl Resolver {
         &self,
         shortest_path: &fst::Fst,
         tokens_range: &Vec<Range<usize>>,
-    ) -> SnipsResolverResult<Vec<ResolvedValue>> {
+    ) -> SnipsParserResult<Vec<ParsedValue>> {
         let mut path_iterator = StringPathsIterator::new(
             &shortest_path,
             &self.symbol_table,
@@ -217,7 +217,7 @@ impl Resolver {
         );
 
         let path = path_iterator.next().ok_or_else(|| format_err!("Empty string path iterator"))??;
-        Ok(Resolver::format_string_path(
+        Ok(Parser::format_string_path(
             &path,
             &tokens_range,
             self.decoding_threshold,
@@ -225,14 +225,14 @@ impl Resolver {
 
     }
 
-    /// Format the shortest path as a vec of ResolvedValue
+    /// Format the shortest path as a vec of ParsedValue
     fn format_string_path(
         string_path: &StringPath,
         tokens_range: &Vec<Range<usize>>,
         threshold: f32,
-    ) -> SnipsResolverResult<Vec<ResolvedValue>> {
+    ) -> SnipsParserResult<Vec<ParsedValue>> {
         let mut input_iterator = whitespace_tokenizer(&string_path.istring);
-        let mut resolved_values: Vec<ResolvedValue> = vec![];
+        let mut parsed_values: Vec<ParsedValue> = vec![];
         let mut input_value_until_now: Vec<String> = vec![];
         let mut current_ranges: Vec<&Range<usize>> = vec![];
         let mut advance_input = false;
@@ -256,7 +256,7 @@ impl Resolver {
                 let range_start = current_ranges.first().unwrap().start;
                 let range_end = current_ranges.last().unwrap().end;
                 if check_threshold(input_value_until_now.len(), n_skips, threshold) {
-                    resolved_values.push(ResolvedValue {
+                    parsed_values.push(ParsedValue {
                         raw_value: input_value_until_now.join(" "),
                         resolved_value: fst_unformat_resolved_value(&token),
                         range: range_start..range_end,
@@ -275,23 +275,23 @@ impl Resolver {
                 advance_input = true;
             }
         }
-        Ok(resolved_values)
+        Ok(parsed_values)
     }
 
-    /// Resolve the input string `input` to a vec of ResolvedValue
-    pub fn run(&self, input: &str) -> SnipsResolverResult<Vec<ResolvedValue>> {
+    /// Parse the input string `input` and output a vec of `ParsedValue`
+    pub fn run(&self, input: &str) -> SnipsParserResult<Vec<ParsedValue>> {
 
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
-        // Compose with the resolver fst
+        // Compose with the parser fst
         let composition = operations::compose(&input_fst, &self.fst);
         if composition.num_states() == 0 {
             return Ok(vec![]);
         }
         let shortest_path = composition.shortest_path(1, false, false);
 
-        let resolution = self.decode_shortest_path(&shortest_path, &tokens_range)?;
+        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range)?;
 
-        Ok(resolution)
+        Ok(parsing)
     }
 }
 
@@ -303,7 +303,7 @@ mod tests {
     #[allow(unused_imports)]
     use data::EntityValue;
     #[test]
-    fn test_resolver() {
+    fn test_parser() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -321,18 +321,18 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.0).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.0).unwrap();
 
-        let mut resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
                     range: 0..2,
                 },
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 20..34,
@@ -340,18 +340,18 @@ mod tests {
             ]
         );
 
-        resolved = resolver
+        parsed = parser
             .run("je veux ecouter les \t rolling stones")
             .unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
                     range: 0..2,
                 },
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 22..36,
@@ -359,30 +359,30 @@ mod tests {
             ]
         );
 
-        resolved = resolver
+        parsed = parser
             .run("i want to listen to rolling stones and blink eight")
             .unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 20..34,
                 },
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "blink eight".to_string(),
                     resolved_value: "Blink-182".to_string(),
                     range: 39..50,
                 },
             ]
         );
-        resolved = resolver.run("joue moi quelque chose").unwrap();
-        assert_eq!(resolved, vec![]);
+        parsed = parser.run("joue moi quelque chose").unwrap();
+        assert_eq!(parsed, vec![]);
     }
 
     #[test]
-    fn test_resolver_with_ranking() {
+    fn test_parser_with_ranking() {
         /* Weight is here a proxy for the ranking of an artist in a popularity
         index */
 
@@ -407,22 +407,22 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
 
         /* When there is a tie in terms of number of token matched, match the most popular choice */
-        let resolved = resolver.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
                 range: 16..26,
             }]
         );
-        let resolved = resolver.run("je veux écouter brel").unwrap();
+        let parsed = parser.run("je veux écouter brel").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Jacques Brel".to_string(),
                 range: 16..20,
@@ -430,28 +430,28 @@ mod tests {
         );
 
         // Resolve to the value with more words matching regardless of popularity
-        let resolved = resolver.run("je veux écouter the flying stones").unwrap();
+        let parsed = parser.run("je veux écouter the flying stones").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "the flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
                 range: 16..33,
             }]
         );
-        let resolved = resolver.run("je veux écouter daniel brel").unwrap();
+        let parsed = parser.run("je veux écouter daniel brel").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "daniel brel".to_string(),
                 resolved_value: "Daniel Brel".to_string(),
                 range: 16..27,
             }]
         );
-        let resolved = resolver.run("je veux écouter jacques").unwrap();
+        let parsed = parser.run("je veux écouter jacques").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "jacques".to_string(),
                 resolved_value: "Jacques".to_string(),
                 range: 16..23,
@@ -460,39 +460,39 @@ mod tests {
     }
 
     #[test]
-    fn test_resolver_with_restart() {
+    fn test_parser_with_restart() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
 
-        let resolved = resolver
+        let parsed = parser
             .run("the music I want to listen to is rolling on stones")
             .unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![]
         );
     }
 
     #[test]
     #[ignore]
-    fn test_resolver_with_mixed_ordered_entity() {
+    fn test_parser_with_mixed_ordered_entity() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
 
-        let resolved = resolver.run("rolling the stones").unwrap();
-        assert_eq!(resolved, vec![]);
+        let parsed = parser.run("rolling the stones").unwrap();
+        assert_eq!(parsed, vec![]);
     }
 
     #[test]
-    fn test_resolver_with_threshold() {
+    fn test_parser_with_threshold() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -514,17 +514,17 @@ mod tests {
             resolved_value: "Les Enfoirés".to_string(),
             raw_value: "les enfoirés".to_string(),
         });
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.5).unwrap();
-        let resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![
-                ResolvedValue {
+                ParsedValue {
                     resolved_value: "Les Enfoirés".to_string(),
                     range: 16..19,
                     raw_value: "les".to_string(),
                 },
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 20..34,
@@ -532,22 +532,22 @@ mod tests {
             ]
         );
 
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.3).unwrap();
-        let resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.3).unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
-            resolved,
+            parsed,
             vec![
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
                     range: 0..2,
                 },
-                ResolvedValue {
+                ParsedValue {
                     resolved_value: "Les Enfoirés".to_string(),
                     range: 16..19,
                     raw_value: "les".to_string(),
                 },
-                ResolvedValue {
+                ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 20..34,
@@ -555,11 +555,11 @@ mod tests {
             ]
         );
 
-        let resolver = Resolver::from_gazetteer(&gazetteer, 0.6).unwrap();
-        let resolved = resolver.run("je veux écouter les rolling stones").unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer, 0.6).unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
-            resolved,
-            vec![ResolvedValue {
+            parsed,
+            vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
                 range: 20..34,

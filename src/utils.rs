@@ -4,20 +4,20 @@ use std::str::Chars;
 use std::iter::Peekable;
 use constants::SPACE_SYMBOL;
 
-/// This function formats the resolved value output by the resolver fst, removing all
+/// This function formats the resolved value output by the parser fst, removing all
 /// whitespaces. Its inverse is fst_unformat_resolved_value.
 pub fn fst_format_resolved_value(string: &str) -> String {
     format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", SPACE_SYMBOL))
 }
 
-/// This function is the inverse of fst_format_resolved_value. It parses the output of the resolver fst to resturn the resolved value
+/// This function is the inverse of fst_format_resolved_value. It formats the output of the parser fst to return the resolved value
 pub fn fst_unformat_resolved_value(string: &str) -> String {
     string
         .replace(&format!("{}:", RESOLVED_SYMBOL), "")
         .replace(SPACE_SYMBOL, " ")
 }
 
-/// Check whether the best resolution matches the threshold condition or not
+/// Check whether the best parsing matches the threshold condition or not
 pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
     // we use n_skip - 1 because the bottleneck takes away one good token
     // that ends uo being skipped

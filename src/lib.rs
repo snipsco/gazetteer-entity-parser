@@ -11,9 +11,9 @@ extern crate serde_derive;
 
 mod constants;
 mod data;
-mod resolver;
+mod parser;
 mod utils;
 
 pub mod errors;
-pub use resolver::{Resolver, ResolvedValue};
+pub use parser::{Parser, ParsedValue};
 pub use data::{Gazetteer, EntityValue};
