@@ -1,0 +1,10 @@
+archTrigram: null
+archType: 'amd64'
+dockerTag: null
+kaldiVersion: null
+makefileTarget: null
+osType: 'macos'
+osVersion: 'any'
+tensorflowVersion: null
+triple: null
+type: 'macos'

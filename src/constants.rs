@@ -6,3 +6,4 @@ pub const RESTART: &str = "<restart>";
 pub const RESTART_IDX: i32 = 2;
 pub const RESOLVED_SYMBOL: &str = "__RESOLVED__";
 pub const SPACE_SYMBOL: &str = "__SPACE__";
+pub const METADATA_FILENAME: &str = "metadata.json";
