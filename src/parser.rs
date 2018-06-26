@@ -47,7 +47,8 @@ pub struct Parser {
 struct ParserConfig {
     decoding_threshold: f32,
     fst_filename: String,
-    symbol_table_filename: String
+    symbol_table_filename: String,
+    version: String
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
@@ -317,7 +318,8 @@ impl Parser {
         ParserConfig {
             fst_filename: "fst".to_string(),
             symbol_table_filename: "symbol_table".to_string(),
-            decoding_threshold: self.decoding_threshold
+            decoding_threshold: self.decoding_threshold,
+            version: env!("CARGO_PKG_VERSION").to_string()
         }
     }
 
