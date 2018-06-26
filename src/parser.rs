@@ -1,18 +1,18 @@
 use constants::RESTART_IDX;
-use constants::{EPS, EPS_IDX, RESTART, SKIP, SKIP_IDX, METADATA_FILENAME};
+use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX};
 use data::EntityValue;
 use data::Gazetteer;
 use errors::GazetteerParserResult;
+use serde_json;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
 use snips_fst::{fst, operations};
+use std::fs;
+use std::io::Write;
 use std::ops::Range;
+use std::path::Path;
 use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
-use std::path::Path;
-use std::fs;
-use serde_json;
-use std::io::Write;
 
 #[derive(Debug)]
 pub struct InternalEntityValue<'a> {
@@ -48,7 +48,7 @@ struct ParserConfig {
     decoding_threshold: f32,
     fst_filename: String,
     symbol_table_filename: String,
-    version: String
+    version: String,
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
@@ -319,33 +319,46 @@ impl Parser {
             fst_filename: "fst".to_string(),
             symbol_table_filename: "symbol_table".to_string(),
             decoding_threshold: self.decoding_threshold,
-            version: env!("CARGO_PKG_VERSION").to_string()
+            version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 
     /// Dump the resolver to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<()> {
-        try!(fs::create_dir(folder_name.as_ref()).map_err(|e| format_err!("Error dumping parser: {}", e.to_string())));
+        try!(
+            fs::create_dir(folder_name.as_ref())
+                .map_err(|e| format_err!("Error dumping parser: {}", e.to_string()))
+        );
         let config = self.get_parser_config();
         let config_string = serde_json::to_string(&config)?;
         // let folder_name_2 = Path::new((&folder_name).as_ref());
         let mut buffer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
         buffer.write(config_string.as_bytes())?;
-        self.fst.write_file(folder_name.as_ref().join(config.fst_filename))?;
-        self.symbol_table.write_file(folder_name.as_ref().join(config.symbol_table_filename), true)?;
+        self.fst
+            .write_file(folder_name.as_ref().join(config.fst_filename))?;
+        self.symbol_table.write_file(
+            folder_name.as_ref().join(config.symbol_table_filename),
+            true,
+        )?;
         Ok(())
     }
 
     /// Load a resolver from a folder
     pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> GazetteerParserResult<Parser> {
-        let metadata_file = try!(fs::File::open(folder_name.as_ref().join(METADATA_FILENAME)).map_err(|e| format_err!("Error loading parser: {}", e.to_string())));
+        let metadata_file = try!(
+            fs::File::open(folder_name.as_ref().join(METADATA_FILENAME))
+                .map_err(|e| format_err!("Error loading parser: {}", e.to_string()))
+        );
         let config: ParserConfig = serde_json::from_reader(metadata_file)?;
         let fst = fst::Fst::from_path(folder_name.as_ref().join(config.fst_filename))?;
-        let symbol_table = SymbolTable::from_path(folder_name.as_ref().join(config.symbol_table_filename), true)?;
+        let symbol_table = SymbolTable::from_path(
+            folder_name.as_ref().join(config.symbol_table_filename),
+            true,
+        )?;
         Ok(Parser {
             fst,
             symbol_table,
-            decoding_threshold: config.decoding_threshold
+            decoding_threshold: config.decoding_threshold,
         })
     }
 }
@@ -354,11 +367,11 @@ impl Parser {
 mod tests {
     extern crate tempfile;
 
+    use self::tempfile::tempdir;
     #[allow(unused_imports)]
     use super::*;
     #[allow(unused_imports)]
     use data::EntityValue;
-    use self::tempfile::tempdir;
 
     #[test]
     fn test_seralization_deserialization() {
@@ -377,7 +390,10 @@ mod tests {
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
         assert!(parser.fst.equals(&reloaded_parser.fst));
-        assert_eq!(parser.decoding_threshold, reloaded_parser.decoding_threshold);
+        assert_eq!(
+            parser.decoding_threshold,
+            reloaded_parser.decoding_threshold
+        );
     }
 
     #[test]
