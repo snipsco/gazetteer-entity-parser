@@ -2,35 +2,36 @@ use constants::RESOLVED_SYMBOL;
 use std::ops::Range;
 use std::str::Chars;
 use std::iter::Peekable;
+use constants::SPACE_SYMBOL;
 
-/// This function formats the resolved value output by the resolver fst. It's inverse is
-/// fst_unformat_resolved_value
-pub(crate) fn fst_format_resolved_value(string: &str) -> String {
-    format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", "_"))
+/// This function formats the resolved value output by the resolver fst, removing all
+/// whitespaces. Its inverse is fst_unformat_resolved_value.
+pub fn fst_format_resolved_value(string: &str) -> String {
+    format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", SPACE_SYMBOL))
 }
 
 /// This function is the inverse of fst_format_resolved_value. It parses the output of the resolver fst to resturn the resolved value
-pub(crate) fn fst_unformat_resolved_value(string: &str) -> String {
+pub fn fst_unformat_resolved_value(string: &str) -> String {
     string
         .replace(&format!("{}:", RESOLVED_SYMBOL), "")
-        .replace("_", " ")
+        .replace(SPACE_SYMBOL, " ")
 }
 
 /// Check whether the best resolution matches the threshold condition or not
-pub(crate) fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
+pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
     // we use n_skip - 1 because the bottleneck takes away one good token
     // that ends uo being skipped
     (n_decoded as f32) / (n_decoded as f32 + n_skips as f32 - 1.0) >= threshold
 }
 
 #[derive(Debug)]
-pub(crate) struct WhitespaceTokenizer<'a> {
+pub struct WhitespaceTokenizer<'a> {
     current_idx: usize,
     char_iterator: Peekable<Chars<'a>>
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
-pub(crate) fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
+pub fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
     WhitespaceTokenizer {
         char_iterator: string.chars().peekable(),
         current_idx: 0,
@@ -79,14 +80,13 @@ mod tests {
 
     #[test]
     fn fst_format_works() {
-        assert_eq!(
-            fst_format_resolved_value("hello world"),
-            "__RESOLVED__:hello_world"
-        );
-        assert_eq!(
-            fst_unformat_resolved_value("__RESOLVED__:hello_world"),
-            "hello world"
-        );
+
+        for sample in vec!["hello world", "hello_ world", "hey\tyou"] {
+            let formatted = fst_format_resolved_value(sample);
+            print!("{:?}", formatted);
+            assert_eq!(formatted.matches(" ").count(), 0);
+            assert_eq!(fst_unformat_resolved_value(&formatted), sample);
+        }
     }
 
     #[test]
