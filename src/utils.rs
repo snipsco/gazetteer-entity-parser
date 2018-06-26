@@ -82,7 +82,6 @@ mod tests {
     fn fst_format_works() {
         for sample in vec!["hello world", "hello_ world", "hey\tyou"] {
             let formatted = fst_format_resolved_value(sample);
-            print!("{:?}", formatted);
             assert_eq!(formatted.matches(" ").count(), 0);
             assert_eq!(fst_unformat_resolved_value(&formatted), sample);
         }
