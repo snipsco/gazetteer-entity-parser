@@ -1,0 +1,17 @@
+archTrigram: 'arm'
+archType: 'armhf'
+dockerTag: 'arm'
+kaldiVersion: '3.10.2-7+rpi1+custom1'
+makefileTarget: 'arm-jessie'
+osType: 'raspbian'
+osVersion: 'jessie'
+tensorflowVersion: '1.3.1-snips-1'
+triple: 'arm-unknown-linux-gnueabihf'
+type: 'linux'
+makeBuildEnv: "SNIPS_TUPLE=raspbian_jessie-linux-gnueabihf SNIPS_KALDI_BLAS_VARIANT=snips-kaldi-atlas SNIPS_KALDI_DEBIAN_ARCH=armhf"
+
+sectionJavaTest: no
+sectionJavaUpload: no
+sectionPython: no
+sectionPythonUpload: no
+sectionTest: no
