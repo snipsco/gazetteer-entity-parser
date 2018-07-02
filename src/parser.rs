@@ -60,7 +60,8 @@ pub struct ParsedValue {
 }
 
 impl Parser {
-    /// Create an empty parser. Its parser has a single, start state, and a minimal symbol table.
+    /// Create an empty parser. Its FST has a single, start state, and it has minimal
+    /// symbol table.
     fn new() -> GazetteerParserResult<Parser> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
