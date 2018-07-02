@@ -1,6 +1,8 @@
-use serde_json;
 use std::fs::File;
 use std::path::Path;
+
+use failure::ResultExt;
+use serde_json;
 
 use errors::GazetteerParserResult;
 
@@ -38,16 +40,13 @@ impl Gazetteer {
         filename: P,
         limit: Option<usize>,
     ) -> GazetteerParserResult<Gazetteer> {
-        let file = File::open(filename)?;
+        let file = File::open(filename.as_ref())
+            .with_context(|_| format!("Cannot open gazetter file {:?}", filename.as_ref()))?;
         let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
         match limit {
             None => (),
-            Some(value) => {
-                if value == 0 {
-                    panic!("limit should be > 0")
-                }
-                data.truncate(value);
-            }
+            Some(0) => Err(format_err!("limit should be > 0"))?,
+            Some(value) => data.truncate(value)
         };
         Ok(Gazetteer { data })
     }

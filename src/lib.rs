@@ -10,7 +10,6 @@
 //! sorting of the gazetteer therefore matters.
 //!
 //!```rust
-//! extern crate gazetteer_entity_parser;
 //!
 //! use gazetteer_entity_parser::{Gazetteer, Parser, EntityValue, ParsedValue};
 //!

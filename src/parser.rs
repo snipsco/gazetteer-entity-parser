@@ -3,6 +3,7 @@ use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX};
 use data::EntityValue;
 use data::Gazetteer;
 use errors::GazetteerParserResult;
+use failure::ResultExt;
 use serde_json;
 use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
 use snips_fst::symbol_table::SymbolTable;
@@ -72,11 +73,17 @@ impl Parser {
         // Add a symbol table with epsilon and skip symbols
         let mut symbol_table = SymbolTable::new();
         let eps_idx = symbol_table.add_symbol(EPS)?;
-        assert_eq!(eps_idx, EPS_IDX);
+        if eps_idx != EPS_IDX {
+            return Err(format_err!("Wrong epsilon index: {}", eps_idx))
+        }
         let skip_idx = symbol_table.add_symbol(SKIP)?;
-        assert_eq!(skip_idx, SKIP_IDX);
+        if skip_idx != SKIP_IDX {
+            return Err(format_err!("Wrong skip index: {}", skip_idx))
+        }
         let restart_idx = symbol_table.add_symbol(RESTART)?;
-        assert_eq!(restart_idx, RESTART_IDX);
+        if restart_idx != RESTART_IDX {
+            return Err(format_err!("Wrong restart index: {}", skip_idx))
+        }
         Ok(Parser {
             fst,
             symbol_table,
@@ -236,7 +243,7 @@ impl Parser {
 
         let path = path_iterator
             .next()
-            .ok_or_else(|| format_err!("Empty string path iterator"))??;
+            .unwrap_or_else(|| Err(format_err!("Empty string path iterator")))?;
         Ok(Parser::format_string_path(
             &path,
             &tokens_range,
@@ -325,13 +332,10 @@ impl Parser {
 
     /// Dump the resolver to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<()> {
-        try!(
-            fs::create_dir(folder_name.as_ref())
-                .map_err(|e| format_err!("Error dumping parser: {}", e.to_string()))
-        );
+        fs::create_dir(folder_name.as_ref())
+            .with_context(|_| format!("Cannot create resolver directory {:?}", folder_name.as_ref()))?;
         let config = self.get_parser_config();
         let config_string = serde_json::to_string(&config)?;
-        // let folder_name_2 = Path::new((&folder_name).as_ref());
         let mut buffer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
         buffer.write(config_string.as_bytes())?;
         self.fst
@@ -345,10 +349,9 @@ impl Parser {
 
     /// Load a resolver from a folder
     pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> GazetteerParserResult<Parser> {
-        let metadata_file = try!(
-            fs::File::open(folder_name.as_ref().join(METADATA_FILENAME))
-                .map_err(|e| format_err!("Error loading parser: {}", e.to_string()))
-        );
+        let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
+        let metadata_file = fs::File::open(&metadata_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))?;
         let config: ParserConfig = serde_json::from_reader(metadata_file)?;
         let fst = fst::Fst::from_path(folder_name.as_ref().join(config.fst_filename))?;
         let symbol_table = SymbolTable::from_path(
