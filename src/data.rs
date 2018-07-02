@@ -41,7 +41,7 @@ impl Gazetteer {
         limit: Option<usize>,
     ) -> GazetteerParserResult<Gazetteer> {
         let file = File::open(filename.as_ref())
-            .with_context(|_| format!("Can't open file '{:?}'", filename.as_ref()))?;
+            .with_context(|_| format!("Cannot open gazetter file {:?}", filename.as_ref()))?;
         let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
         match limit {
             None => (),
