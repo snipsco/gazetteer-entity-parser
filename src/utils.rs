@@ -7,7 +7,17 @@ use std::str::Chars;
 /// This function formats the resolved value output by the parser fst, removing all
 /// whitespaces. Its inverse is fst_unformat_resolved_value.
 pub fn fst_format_resolved_value(string: &str) -> String {
-    format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", SPACE_SYMBOL))
+    let formatted: String = string
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() {
+                SPACE_SYMBOL.to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    format!("{}:{}", RESOLVED_SYMBOL, formatted)
 }
 
 /// This function is the inverse of fst_format_resolved_value. It formats the output of the parser fst to return the resolved value
@@ -80,11 +90,27 @@ mod tests {
 
     #[test]
     fn fst_format_works() {
-        for sample in vec!["hello world", "hello_ world", "hey\tyou"] {
-            let formatted = fst_format_resolved_value(sample);
-            assert_eq!(formatted.matches(" ").count(), 0);
-            assert_eq!(fst_unformat_resolved_value(&formatted), sample);
-        }
+        let formatted = fst_format_resolved_value("hello world");
+        let unformatted = fst_unformat_resolved_value(&formatted);
+        assert_eq!(formatted, "__RESOLVED__:hello__SPACE__world");
+        assert_eq!(unformatted, "hello world");
+
+        let formatted = fst_format_resolved_value("hello_ world");
+        let unformatted = fst_unformat_resolved_value(&formatted);
+        assert_eq!(formatted, "__RESOLVED__:hello___SPACE__world");
+        assert_eq!(unformatted, "hello_ world");
+
+        let formatted = fst_format_resolved_value("hey\tyou");
+        let unformatted = fst_unformat_resolved_value(&formatted);
+        assert_eq!(formatted, "__RESOLVED__:hey__SPACE__you");
+        assert_eq!(unformatted, "hey you");
+    }
+
+    #[test]
+    fn fst_format_works_with_unicode_whitespace() {
+        let sample = "Quand est-ce ?";
+        let formatted = fst_format_resolved_value(sample);
+        assert_eq!(formatted, "__RESOLVED__:Quand__SPACE__est-ce__SPACE__?");
     }
 
     #[test]
