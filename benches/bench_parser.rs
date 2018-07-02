@@ -56,10 +56,10 @@ fn criterion_benchmark(c: &mut Criterion) {
             resolved_value: val.to_lowercase(),
         });
     }
-    let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+    let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
     c.bench_function("Parse random value", move |b| {
-        b.iter(|| parser.run(&rsg.generate()))
+        b.iter(|| parser.run(&rsg.generate(), 0.5))
     });
 }
 
