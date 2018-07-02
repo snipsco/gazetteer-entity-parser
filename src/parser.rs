@@ -567,6 +567,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_with_unicode_whitespace() {
+        let mut gazetteer = Gazetteer { data: Vec::new() };
+        gazetteer.add(EntityValue {
+            resolved_value: "Quand est-ce ?".to_string(),
+            raw_value: "quand est -ce".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parsed = parser.run("non quand est survivre").unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                resolved_value: "Quand est-ce ?".to_string(),
+                range: 4..13,
+                raw_value: "quand est".to_string(),
+            }]
+        )
+    }
+
+    #[test]
     #[ignore]
     fn test_parser_with_mixed_ordered_entity() {
         let mut gazetteer = Gazetteer { data: Vec::new() };
