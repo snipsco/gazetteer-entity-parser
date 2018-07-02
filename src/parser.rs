@@ -34,19 +34,16 @@ impl<'a> InternalEntityValue<'a> {
 
 /// Struct representing the parser. The `fst` attribute holds the finite state transducer
 /// representing the logic of the transducer, and its symbol table is held by `symbol_table`.
-/// `decoding_threshold` is the minimum fraction of words to match for an entity to be parsed.
 /// The Parser will match the longest possible contiguous substrings of a query that match entity
 /// values. The order in which the values are added to the parser matters: In case of ambiguity
 /// between two parsings, the Parser will output the value that was added first (see Gazetteer).
 pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
-    decoding_threshold: f32,
 }
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
-    decoding_threshold: f32,
     fst_filename: String,
     symbol_table_filename: String,
     version: String,
@@ -63,9 +60,8 @@ pub struct ParsedValue {
 }
 
 impl Parser {
-    /// Create an empty parser. Its parser has a single, start state. Its symbol table has
-    /// epsilon and a skip symbol
-    fn new(decoding_threshold: f32) -> GazetteerParserResult<Parser> {
+    /// Create an empty parser. Its parser has a single, start state, and a minimal symbol table.
+    fn new() -> GazetteerParserResult<Parser> {
         // Add a FST with a single state and set it as start
         let mut fst = fst::Fst::new();
         let start_state = fst.add_state();
@@ -74,21 +70,17 @@ impl Parser {
         let mut symbol_table = SymbolTable::new();
         let eps_idx = symbol_table.add_symbol(EPS)?;
         if eps_idx != EPS_IDX {
-            return Err(format_err!("Wrong epsilon index: {}", eps_idx))
+            return Err(format_err!("Wrong epsilon index: {}", eps_idx));
         }
         let skip_idx = symbol_table.add_symbol(SKIP)?;
         if skip_idx != SKIP_IDX {
-            return Err(format_err!("Wrong skip index: {}", skip_idx))
+            return Err(format_err!("Wrong skip index: {}", skip_idx));
         }
         let restart_idx = symbol_table.add_symbol(RESTART)?;
         if restart_idx != RESTART_IDX {
-            return Err(format_err!("Wrong restart index: {}", skip_idx))
+            return Err(format_err!("Wrong restart index: {}", skip_idx));
         }
-        Ok(Parser {
-            fst,
-            symbol_table,
-            decoding_threshold,
-        })
+        Ok(Parser { fst, symbol_table })
     }
 
     /// This function returns a FST that checks that at least one of the words in
@@ -173,13 +165,9 @@ impl Parser {
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
     /// This function adds the entity values from the gazetteer
     /// and performs several optimizations on the resulting FST. This is the recommended method
-    /// to define a parser. The `parser_threshold` argument sets the minimum fraction of words
-    /// to match for an entity to be parsed.
-    pub fn from_gazetteer(
-        gazetteer: &Gazetteer,
-        parser_threshold: f32,
-    ) -> GazetteerParserResult<Parser> {
-        let mut parser = Parser::new(parser_threshold)?;
+    /// to define a parser.
+    pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
+        let mut parser = Parser::new()?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(&InternalEntityValue::new(entity_value, rank))?;
         }
@@ -232,6 +220,7 @@ impl Parser {
         &self,
         shortest_path: &fst::Fst,
         tokens_range: &Vec<Range<usize>>,
+        decoding_threshold: f32,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
         let mut path_iterator = StringPathsIterator::new(
             &shortest_path,
@@ -247,7 +236,7 @@ impl Parser {
         Ok(Parser::format_string_path(
             &path,
             &tokens_range,
-            self.decoding_threshold,
+            decoding_threshold,
         )?)
     }
 
@@ -306,8 +295,13 @@ impl Parser {
         Ok(parsed_values)
     }
 
-    /// Parse the input string `input` and output a vec of `ParsedValue`
-    pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
+    /// Parse the input string `input` and output a vec of `ParsedValue`. `decoding_threshold` is
+    /// the minimum fraction of words to match for an entity to be parsed.
+    pub fn run(
+        &self,
+        input: &str,
+        decoding_threshold: f32,
+    ) -> GazetteerParserResult<Vec<ParsedValue>> {
         let (input_fst, tokens_range) = self.build_input_fst(input)?;
         // Compose with the parser fst
         let composition = operations::compose(&input_fst, &self.fst);
@@ -316,7 +310,7 @@ impl Parser {
         }
         let shortest_path = composition.shortest_path(1, false, false);
 
-        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range)?;
+        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range, decoding_threshold)?;
 
         Ok(parsing)
     }
@@ -325,15 +319,18 @@ impl Parser {
         ParserConfig {
             fst_filename: "fst".to_string(),
             symbol_table_filename: "symbol_table".to_string(),
-            decoding_threshold: self.decoding_threshold,
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 
     /// Dump the resolver to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<()> {
-        fs::create_dir(folder_name.as_ref())
-            .with_context(|_| format!("Cannot create resolver directory {:?}", folder_name.as_ref()))?;
+        fs::create_dir(folder_name.as_ref()).with_context(|_| {
+            format!(
+                "Cannot create resolver directory {:?}",
+                folder_name.as_ref()
+            )
+        })?;
         let config = self.get_parser_config();
         let config_string = serde_json::to_string(&config)?;
         let mut buffer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
@@ -358,11 +355,7 @@ impl Parser {
             folder_name.as_ref().join(config.symbol_table_filename),
             true,
         )?;
-        Ok(Parser {
-            fst,
-            symbol_table,
-            decoding_threshold: config.decoding_threshold,
-        })
+        Ok(Parser { fst, symbol_table })
     }
 }
 
@@ -388,15 +381,11 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.0).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
         assert!(parser.fst.equals(&reloaded_parser.fst));
-        assert_eq!(
-            parser.decoding_threshold,
-            reloaded_parser.decoding_threshold
-        );
     }
 
     #[test]
@@ -418,9 +407,11 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.0).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let mut parsed = parser
+            .run("je veux écouter les rolling stones", 0.0)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -437,7 +428,9 @@ mod tests {
             ]
         );
 
-        parsed = parser.run("je veux ecouter les \t rolling stones").unwrap();
+        parsed = parser
+            .run("je veux ecouter les \t rolling stones", 0.0)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -455,7 +448,7 @@ mod tests {
         );
 
         parsed = parser
-            .run("i want to listen to rolling stones and blink eight")
+            .run("i want to listen to rolling stones and blink eight", 0.0)
             .unwrap();
         assert_eq!(
             parsed,
@@ -472,7 +465,7 @@ mod tests {
                 },
             ]
         );
-        parsed = parser.run("joue moi quelque chose").unwrap();
+        parsed = parser.run("joue moi quelque chose", 0.0).unwrap();
         assert_eq!(parsed, vec![]);
     }
 
@@ -502,10 +495,10 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
         /* When there is a tie in terms of number of token matched, match the most popular choice */
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 0.5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -514,7 +507,7 @@ mod tests {
                 range: 16..26,
             }]
         );
-        let parsed = parser.run("je veux écouter brel").unwrap();
+        let parsed = parser.run("je veux écouter brel", 0.5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -525,7 +518,9 @@ mod tests {
         );
 
         // Resolve to the value with more words matching regardless of popularity
-        let parsed = parser.run("je veux écouter the flying stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter the flying stones", 0.5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -534,7 +529,7 @@ mod tests {
                 range: 16..33,
             }]
         );
-        let parsed = parser.run("je veux écouter daniel brel").unwrap();
+        let parsed = parser.run("je veux écouter daniel brel", 0.5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -543,7 +538,7 @@ mod tests {
                 range: 16..27,
             }]
         );
-        let parsed = parser.run("je veux écouter jacques").unwrap();
+        let parsed = parser.run("je veux écouter jacques", 0.5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -561,10 +556,10 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let parsed = parser
-            .run("the music I want to listen to is rolling on stones")
+            .run("the music I want to listen to is rolling on stones", 0.5)
             .unwrap();
         assert_eq!(parsed, vec![]);
     }
@@ -576,8 +571,8 @@ mod tests {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
-        let parsed = parser.run("non quand est survivre").unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let parsed = parser.run("non quand est survivre", 0.5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -596,9 +591,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        let parsed = parser.run("rolling the stones").unwrap();
+        let parsed = parser.run("rolling the stones", 0.5).unwrap();
         assert_eq!(parsed, vec![]);
     }
 
@@ -625,8 +620,10 @@ mod tests {
             resolved_value: "Les Enfoirés".to_string(),
             raw_value: "les enfoirés".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 0.5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -643,8 +640,9 @@ mod tests {
             ]
         );
 
-        let parser = Parser::from_gazetteer(&gazetteer, 0.3).unwrap();
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 0.3)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -666,8 +664,9 @@ mod tests {
             ]
         );
 
-        let parser = Parser::from_gazetteer(&gazetteer, 0.6).unwrap();
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 0.6)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {

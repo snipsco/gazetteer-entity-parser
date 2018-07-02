@@ -31,8 +31,8 @@
 //!     resolved_value: "Daniel Brel".to_string(),
 //!     raw_value: "daniel brel".to_string(),
 //! });
-//! let parser = Parser::from_gazetteer(&gazetteer, 0.5).unwrap();
-//! let parsed_stones = parser.run("I want to listen to the stones").unwrap();
+//! let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+//! let parsed_stones = parser.run("I want to listen to the stones", 0.5).unwrap();
 //! assert_eq!(
 //!     parsed_stones,
 //!     vec![ParsedValue {
@@ -42,7 +42,7 @@
 //!     }]
 //! );
 //! // Example with an ambiguity, where the artist with smaller rank is preferred
-//! let parsed_brel = parser.run("I want to listen to brel").unwrap();
+//! let parsed_brel = parser.run("I want to listen to brel", 0.5).unwrap();
 //! assert_eq!(
 //!     parsed_brel,
 //!     vec![ParsedValue {

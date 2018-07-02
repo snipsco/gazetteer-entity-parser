@@ -46,7 +46,7 @@ impl Gazetteer {
         match limit {
             None => (),
             Some(0) => Err(format_err!("limit should be > 0"))?,
-            Some(value) => data.truncate(value)
+            Some(value) => data.truncate(value),
         };
         Ok(Gazetteer { data })
     }
