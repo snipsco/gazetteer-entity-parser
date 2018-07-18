@@ -48,7 +48,7 @@ impl RandomStringGenerator {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut rsg = RandomStringGenerator::new(100);
-    let mut gazetteer = Gazetteer { data: Vec::new() };
+    let mut gazetteer = Gazetteer::new();
     for _ in 1..100000 {
         let val = rsg.generate();
         gazetteer.add(EntityValue {

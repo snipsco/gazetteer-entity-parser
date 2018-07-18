@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_seralization_deserialization() {
         let tdir = tempdir().unwrap();
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_parser() {
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -475,7 +475,7 @@ mod tests {
         /* Weight is here a proxy for the ranking of an artist in a popularity
         index */
 
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "Jacques Brel".to_string(),
             raw_value: "jacques brel".to_string(),
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_restart() {
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_unicode_whitespace() {
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_parser_with_mixed_ordered_entity() {
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_threshold() {
-        let mut gazetteer = Gazetteer { data: Vec::new() };
+        let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),

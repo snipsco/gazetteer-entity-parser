@@ -13,7 +13,7 @@
 //!
 //! use gazetteer_entity_parser::{Gazetteer, Parser, EntityValue, ParsedValue};
 //!
-//! let mut gazetteer = Gazetteer { data: Vec::new() };
+//! let mut gazetteer = Gazetteer::new();
 //! // We fill the gazetteer with artists, sorted by popularity
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "The Rolling Stones".to_string(),
