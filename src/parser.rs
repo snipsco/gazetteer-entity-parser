@@ -181,20 +181,28 @@ impl Parser {
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &InternalEntityValue) -> GazetteerParserResult<()> {
+    fn add_value(&mut self, restart_state: i32, entity_value: &InternalEntityValue) -> GazetteerParserResult<()> {
         // compute weight for each arc based on size of string
         let weight_by_token = 1.0;
         // let current_head = self.make_bottleneck(&entity_value.raw_value, -weight_by_token)?;
         // The only part of the bottelneck that we need to retain is the
         // restart symbol
-        let mut current_head = self.fst.start();
+        // let mut current_head = self.fst.start();
+        // let next_head = self.fst.add_state();
+        // self.fst.add_arc(current_head, RESTART_IDX, EPS_IDX, 0.0, next_head);
+        // self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
+        // self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
+        // current_head = next_head;
+        self.make_value_transducer(restart_state, &entity_value, weight_by_token)?;
+        Ok(())
+    }
+
+    fn add_restart_arc(&mut self) -> GazetteerParserResult<i32> {
+        let current_head = self.fst.start();
         let next_head = self.fst.add_state();
         self.fst.add_arc(current_head, RESTART_IDX, EPS_IDX, 0.0, next_head);
         self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
-        // self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
-        current_head = next_head;
-        self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
-        Ok(())
+        Ok(next_head)
     }
 
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
@@ -203,8 +211,9 @@ impl Parser {
     /// to define a parser.
     pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
         let mut parser = Parser::new()?;
+        let restart_state = parser.add_restart_arc()?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            parser.add_value(&InternalEntityValue::new(entity_value, rank))?;
+            parser.add_value(restart_state, &InternalEntityValue::new(entity_value, rank))?;
         }
         parser.fst.optimize();
         parser.fst.closure_plus();
