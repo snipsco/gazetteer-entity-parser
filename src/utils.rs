@@ -29,9 +29,7 @@ pub fn fst_unformat_resolved_value(string: &str) -> String {
 
 /// Check whether the best parsing matches the threshold condition or not
 pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
-    // we use n_skip - 1 because the bottleneck takes away one good token
-    // that ends uo being skipped
-    (n_decoded as f32) / (n_decoded as f32 + n_skips as f32 - 1.0) >= threshold
+    (n_decoded as f32) / (n_decoded as f32 + n_skips as f32) >= threshold
 }
 
 #[derive(Debug)]

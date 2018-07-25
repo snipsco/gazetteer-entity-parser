@@ -36,7 +36,7 @@ impl RandomStringGenerator {
     }
 
     fn generate(&mut self) -> String {
-        let n_words = self.rng.gen_range(1, 4);
+        let n_words = self.rng.gen_range(1, 10);
         let mut s: Vec<String> = vec![];
         for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
         {
@@ -47,9 +47,9 @@ impl RandomStringGenerator {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut rsg = RandomStringGenerator::new(100);
+    let mut rsg = RandomStringGenerator::new(10000);
     let mut gazetteer = Gazetteer::new();
-    for _ in 1..100000 {
+    for _ in 1..150000 {
         let val = rsg.generate();
         gazetteer.add(EntityValue {
             raw_value: val.clone(),
