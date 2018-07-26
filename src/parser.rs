@@ -127,11 +127,11 @@ impl Parser {
     /// the resolved value.
     fn make_value_transducer(
         &mut self,
-        mut current_head: i32,
+        mut restart_state: i32,
         entity_value: &InternalEntityValue,
         weight_by_token: f32,
-    ) -> GazetteerParserResult<()> {
-        let mut next_head: i32;
+    ) -> GazetteerParserResult<i32> {
+        // let mut next_head: i32;
         // The symbol table cannot be deserialized if some symbols contain whitespaces. So we
         // replace them with underscores.
         let resolved_value_idx = self
@@ -167,10 +167,11 @@ impl Parser {
                     h
                 });
         }
-        next_head = self.fst.add_state();
-        self.fst.add_arc(current_head, resolved_value_idx, resolved_value_idx, -1.0, next_head);
+        let start_state = self.fst.start();
+        let next_head = self.fst.add_state();
+        self.fst.add_arc(start_state, resolved_value_idx, resolved_value_idx, -1.0, next_head);
         self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx, -1.0, next_head);
-
+        self.fst.add_arc(next_head, EPS_IDX, EPS_IDX, 0.0, restart_state);
         // Next we output the resolved value
         // next_head = self.fst.add_state();
 
@@ -180,7 +181,7 @@ impl Parser {
         self.fst.set_final(next_head, entity_value.weight);
         // go back to the start
         // self.fst.add_arc()
-        Ok(())
+        Ok(next_head)
     }
 
     /// Add a single entity value to the parser. This function is kept private to promote
@@ -203,11 +204,11 @@ impl Parser {
     }
 
     fn add_restart_arc(&mut self) -> GazetteerParserResult<i32> {
-        let current_head = self.fst.start();
-        let next_head = self.fst.add_state();
-        self.fst.add_arc(current_head, RESTART_IDX, EPS_IDX, 1.0, next_head);
-        self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 1.0, next_head);
-        Ok(next_head)
+        let start_state = self.fst.start();
+        let restart_state = self.fst.add_state();
+        self.fst.add_arc(restart_state, RESTART_IDX, EPS_IDX, 1.0, start_state);
+        self.fst.add_arc(restart_state, EPS_IDX, EPS_IDX, 1.0, start_state);
+        Ok(restart_state)
     }
 
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
@@ -221,7 +222,7 @@ impl Parser {
             parser.add_value(restart_state, &InternalEntityValue::new(entity_value, rank))?;
         }
         // parser.fst.optimize();
-        parser.fst.closure_plus();
+        // parser.fst.closure_plus();
         parser.fst.arc_sort(true);
         Ok(parser)
     }
