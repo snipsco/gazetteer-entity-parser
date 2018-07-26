@@ -140,24 +140,24 @@ impl Parser {
         // First we consume the raw value
         let mut bottleneck_inserted = false;
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            next_head = self.fst.add_state();
+            // next_head = self.fst.add_state();
             let token_idx = self.symbol_table.add_symbol(&token)?;
-            // Each arc can either consume a token, and output it...
+            // // Each arc can either consume a token, and output it...
+            // // self.fst
+            // //     .add_arc(current_head, resolved_value_idx, resolved_value_idx, 0.0, next_head);
             // self.fst
-            //     .add_arc(current_head, resolved_value_idx, resolved_value_idx, 0.0, next_head);
-            self.fst
-                .add_arc(current_head, resolved_value_idx, CONSUMED_IDX, 0.0, next_head);
-            // Or skip the word, with a certain weight, outputting skip
-            // We want at least one word belonging to the entity value
-            // So while subsequent symbols are optional, the first entity symbol must be here
-            if !bottleneck_inserted {
-                bottleneck_inserted = true;
-            } else {
-                self.fst
-                    .add_arc(current_head, EPS_IDX, SKIP_IDX, weight_by_token, next_head);
-            }
-            // Update current head
-            current_head = next_head;
+            //     .add_arc(current_head, resolved_value_idx, CONSUMED_IDX, 0.0, next_head);
+            // // Or skip the word, with a certain weight, outputting skip
+            // // We want at least one word belonging to the entity value
+            // // So while subsequent symbols are optional, the first entity symbol must be here
+            // if !bottleneck_inserted {
+            //     bottleneck_inserted = true;
+            // } else {
+            //     self.fst
+            //         .add_arc(current_head, EPS_IDX, SKIP_IDX, weight_by_token, next_head);
+            // }
+            // // Update current head
+            // current_head = next_head;
             // Add the mapping from token to resolved value
             self.word_to_value.entry(token_idx)
                 .and_modify(|e| { (*e).insert(resolved_value_idx); })
@@ -167,14 +167,19 @@ impl Parser {
                     h
                 });
         }
-        // Next we output the resolved value
         next_head = self.fst.add_state();
+        self.fst.add_arc(current_head, resolved_value_idx, resolved_value_idx, -1.0, next_head);
+        self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx, -1.0, next_head);
 
-        self.fst
-            .add_arc(current_head, EPS_IDX, resolved_value_idx, 0.0, next_head);
+        // Next we output the resolved value
+        // next_head = self.fst.add_state();
+
+        // self.fst
+        //     .add_arc(current_head, EPS_IDX, resolved_value_idx, 0.0, next_head);
         // Make current head final, with weight given by entity value
         self.fst.set_final(next_head, entity_value.weight);
-
+        // go back to the start
+        // self.fst.add_arc()
         Ok(())
     }
 
@@ -200,8 +205,8 @@ impl Parser {
     fn add_restart_arc(&mut self) -> GazetteerParserResult<i32> {
         let current_head = self.fst.start();
         let next_head = self.fst.add_state();
-        self.fst.add_arc(current_head, RESTART_IDX, EPS_IDX, 0.0, next_head);
-        self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
+        self.fst.add_arc(current_head, RESTART_IDX, EPS_IDX, 1.0, next_head);
+        self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 1.0, next_head);
         Ok(next_head)
     }
 
