@@ -220,7 +220,7 @@ impl Parser {
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(restart_state, &InternalEntityValue::new(entity_value, rank))?;
         }
-        parser.fst.optimize();
+        // parser.fst.optimize();
         parser.fst.closure_plus();
         parser.fst.arc_sort(true);
         Ok(parser)
@@ -238,11 +238,11 @@ impl Parser {
         for (token_range, token) in whitespace_tokenizer(input) {
             match self.symbol_table.find_symbol(&token)? {
                 Some(value) => {
-                    if !restart_to_be_inserted {
+                    if restart_to_be_inserted {
                         let next_head = input_fst.add_state();
                         input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
                         current_head = next_head;
-                        restart_to_be_inserted = true;
+                        restart_to_be_inserted = false;
                     }
                     let next_head = input_fst.add_state();
                     // println!("VALUE: {:?}", value);
@@ -254,7 +254,7 @@ impl Parser {
                     current_head = next_head;
                 }
                 None => {
-                    restart_to_be_inserted = false;
+                    restart_to_be_inserted = true;
                     // if the word is not in the symbol table, there is no
                     // chance of matching it: we skip
                     continue;
@@ -263,7 +263,7 @@ impl Parser {
         }
         // Set final state
         input_fst.set_final(current_head, 0.0);
-        input_fst.optimize();
+        // input_fst.optimize();
         input_fst.arc_sort(false);
         // println!("INPUT FST NUM STATES {:?}", input_fst.num_states());
         // input_fst.write_file("input_fst.fst").unwrap();
@@ -933,5 +933,10 @@ mod tests {
         let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
         let parser = Parser::from_gazetteer(&gaz).unwrap();
         parser.dump("./test_artist_parser").unwrap();
+
+        let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+        let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
+        parser2.dump("./test_album_parser").unwrap();
+
     }
 }

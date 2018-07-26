@@ -35,8 +35,8 @@ impl RandomStringGenerator {
         }
     }
 
-    fn generate(&mut self) -> String {
-        let n_words = self.rng.gen_range(1, 4);
+    fn generate(&mut self, max_words: usize) -> String {
+        let n_words = self.rng.gen_range(1, max_words);
         let mut s: Vec<String> = vec![];
         for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
         {
@@ -47,10 +47,10 @@ impl RandomStringGenerator {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut rsg = RandomStringGenerator::new(100);
+    let mut rsg = RandomStringGenerator::new(10000);
     let mut gazetteer = Gazetteer::new();
-    for _ in 1..100000 {
-        let val = rsg.generate();
+    for _ in 1..150000 {
+        let val = rsg.generate(10);
         gazetteer.add(EntityValue {
             raw_value: val.clone(),
             resolved_value: val.to_lowercase(),
@@ -58,9 +58,25 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-    c.bench_function("Parse random value", move |b| {
-        b.iter(|| parser.run(&rsg.generate(), 0.5))
+    c.bench_function("Parse random value - low redundancy", move |b| {
+        b.iter(|| parser.run(&rsg.generate(10), 0.5))
     });
+
+    let mut rsg = RandomStringGenerator::new(100);
+    let mut gazetteer = Gazetteer::new();
+    for _ in 1..100000 {
+        let val = rsg.generate(4);
+        gazetteer.add(EntityValue {
+            raw_value: val.clone(),
+            resolved_value: val.to_lowercase(),
+        });
+    }
+    let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+    c.bench_function("Parse random value - high redundancy", move |b| {
+        b.iter(|| parser.run(&rsg.generate(4), 0.5))
+    });
+
 }
 
 criterion_group!(benches, criterion_benchmark);
