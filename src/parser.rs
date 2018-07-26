@@ -42,7 +42,8 @@ impl<'a> InternalEntityValue<'a> {
 pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
-    word_to_value: HashMap<i32, HashSet<i32>>
+    word_to_value: HashMap<i32, HashSet<i32>>,  // maps word indec to set of values containing word
+    value_to_length: HashMap<i32, usize>  // maps resolved value to number of words composing its
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,7 +89,7 @@ impl Parser {
         if restart_idx != RESTART_IDX {
             return Err(format_err!("Wrong restart index: {}", restart_idx));
         }
-        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new() })
+        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_length: HashMap::new() })
     }
 
     /// This function returns a FST that checks that at least one of the words in
@@ -127,7 +128,7 @@ impl Parser {
     /// the resolved value.
     fn make_value_transducer(
         &mut self,
-        mut restart_state: i32,
+        restart_state: i32,
         entity_value: &InternalEntityValue,
         weight_by_token: f32,
     ) -> GazetteerParserResult<i32> {
@@ -139,6 +140,7 @@ impl Parser {
             .add_symbol(&fst_format_resolved_value(&entity_value.resolved_value))?;
         // First we consume the raw value
         let mut bottleneck_inserted = false;
+        let mut raw_value_len: usize = 0;
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
             // next_head = self.fst.add_state();
             let token_idx = self.symbol_table.add_symbol(&token)?;
@@ -166,12 +168,23 @@ impl Parser {
                     h.insert(resolved_value_idx);
                     h
                 });
+            raw_value_len += 1;
         }
-        let start_state = self.fst.start();
+        self.value_to_length.entry(resolved_value_idx)
+            .or_insert(raw_value_len);
+        // let start_state = self.fst.start();
         let next_head = self.fst.add_state();
-        self.fst.add_arc(start_state, resolved_value_idx, resolved_value_idx, -1.0, next_head);
-        self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx, -1.0, next_head);
-        self.fst.add_arc(next_head, EPS_IDX, EPS_IDX, 0.0, restart_state);
+        // self.fst.add_arc(restart_state, resolved_value_idx, resolved_value_idx, -(1.0 + 100.0 - (raw_value_len as f32)), next_head);
+        // self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx, -(1.0 + 100.0 - (raw_value_len as f32)), next_head);
+
+        self.fst.add_arc(restart_state, resolved_value_idx, resolved_value_idx, raw_value_len as f32, next_head);
+        self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx,  raw_value_len as f32, next_head);
+
+
+        // self.fst.add_arc(restart_state, resolved_value_idx, resolved_value_idx, -(1.0 + 1.0 / (raw_value_len as f32)), next_head);
+        // self.fst.add_arc(next_head, resolved_value_idx, resolved_value_idx, -(1.0 + 1.0 / (raw_value_len as f32)), next_head);
+
+        // self.fst.add_arc(next_head, EPS_IDX, EPS_IDX, 0.0, restart_state);
         // Next we output the resolved value
         // next_head = self.fst.add_state();
 
@@ -199,6 +212,7 @@ impl Parser {
         // self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
         // self.fst.add_arc(current_head, EPS_IDX, EPS_IDX, 0.0, next_head);
         // current_head = next_head;
+        // let restart_state = self.add_restart_arc()?;
         self.make_value_transducer(restart_state, &entity_value, weight_by_token)?;
         Ok(())
     }
@@ -206,8 +220,8 @@ impl Parser {
     fn add_restart_arc(&mut self) -> GazetteerParserResult<i32> {
         let start_state = self.fst.start();
         let restart_state = self.fst.add_state();
-        self.fst.add_arc(restart_state, RESTART_IDX, EPS_IDX, 1.0, start_state);
-        self.fst.add_arc(restart_state, EPS_IDX, EPS_IDX, 1.0, start_state);
+        self.fst.add_arc(start_state, RESTART_IDX, RESTART_IDX, 0.0, restart_state);
+        self.fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
         Ok(restart_state)
     }
 
@@ -221,8 +235,9 @@ impl Parser {
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(restart_state, &InternalEntityValue::new(entity_value, rank))?;
         }
+        // println!("PARSER FST NUM STATES {:?}", parser.fst.num_states());
         // parser.fst.optimize();
-        // parser.fst.closure_plus();
+        parser.fst.closure_plus();
         parser.fst.arc_sort(true);
         Ok(parser)
     }
@@ -241,14 +256,15 @@ impl Parser {
                 Some(value) => {
                     if restart_to_be_inserted {
                         let next_head = input_fst.add_state();
+                        println!("{:?}", RESTART);
                         input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
                         current_head = next_head;
                         restart_to_be_inserted = false;
                     }
                     let next_head = input_fst.add_state();
-                    // println!("VALUE: {:?}", value);
+                    println!("VALUE: {:?}", self.symbol_table.find_index(value));
                     for res_value in self.word_to_value.get(&value).unwrap() {
-                        // println!("RES_VALUE: {:?}", res_value);
+                        println!("RES_VALUE: {:?}", self.symbol_table.find_index(*res_value));
                         input_fst.add_arc(current_head, value, *res_value, 0.0, next_head);
                     }
                     tokens_ranges.push(token_range);
@@ -267,7 +283,8 @@ impl Parser {
         // input_fst.optimize();
         input_fst.arc_sort(false);
         // println!("INPUT FST NUM STATES {:?}", input_fst.num_states());
-        // input_fst.write_file("input_fst.fst").unwrap();
+        input_fst.write_file("input_fst.fst").unwrap();
+        self.symbol_table.write_file("symbol_table.txt", false);
         Ok((input_fst, tokens_ranges))
     }
 
@@ -286,11 +303,22 @@ impl Parser {
             true,
         );
 
+        // DEBUG
+        // for path in StringPathsIterator::new(
+        //     &shortest_path,
+        //     &self.symbol_table,
+        //     &self.symbol_table,
+        //     true,
+        //     true,
+        // ) {
+        //     println!("PATH: {:?}", path);
+        // }
+        //
         let path = path_iterator
             .next()
             .unwrap_or_else(|| Err(format_err!("Empty string path iterator")))?;
-        // println!("PATH: {:?}", path);
-        Ok(Parser::format_string_path(
+
+        Ok(self.format_string_path(
             &path,
             &tokens_range,
             decoding_threshold,
@@ -299,6 +327,7 @@ impl Parser {
 
     /// Format the shortest path as a vec of ParsedValue
     fn format_string_path(
+        &self,
         string_path: &StringPath,
         tokens_range: &Vec<Range<usize>>,
         threshold: f32,
@@ -318,228 +347,76 @@ impl Parser {
         let mut input_iterator = whitespace_tokenizer(&string_path.istring).peekable();
         let mut input_ranges_iterator = tokens_range.iter();
 
+        // start the iterators
+        // output_iterator.next();
+        // input_iterator.next();
+
         // let consumed_string = CONSUMED.to_string();
         // let skip_string = SKIP.to_string();
 
+        // Assumptions: the input and output strings have the same length, with the i-th input
+        // token mapping to the i-th output token
         'outer: loop {
+            // First we consume the output values corresponding to the same resolved value, and
+            // compute the number of tokens consumed
+            let current_resolved_value = match output_iterator.peek() {
+                Some((_, value)) => value.clone(),
+                None => break 'outer
+            };
+            if current_resolved_value == RESTART {
+                output_iterator.next();
+                continue
+            }
+            let resolved_val_idx = match self.symbol_table.find_symbol(&current_resolved_value)? {
+                Some(value) => value,
+                None => bail!("Resolved value absent from symbol table")
+            };
+            let resolved_val_length = self.value_to_length.get(&resolved_val_idx).ok_or_else(|| format_err!("Missing length for resolved value"))?;
             let mut n_consumed_tokens = 0;
-            let mut n_skips = 0;
-            let current_resolved_value = 'inner: loop {
-                // First consume the skips and the current parsed value from the output
-                // Assumption: the parser fst only outputs resolved values, the skip symbol, or the
-                // consumed symbol
+            'inner: loop {
                 match output_iterator.peek() {
-                    Some((_, value)) => {
-                        // println!("value {:?}", value);
-                        // bail!("");
-                        match value.as_ref() {
-                            CONSUMED => {n_consumed_tokens += 1;}
-                            SKIP => {n_skips += 1}
-                            resolved => {break 'inner Some(resolved.to_string())}
+                    Some((_, ref value)) if value == &current_resolved_value => {
+                        if n_consumed_tokens < *resolved_val_length {
+                            n_consumed_tokens += 1;
+                        } else {
+                            break 'inner
                         }
                     }
-                    None => { break 'inner None }
-                };
-                // println!("n_consumed_tokens {:?}", n_consumed_tokens);
-                // println!("n_skips {:?}", n_skips);
-                output_iterator.next();
-            };
-
-            match current_resolved_value {
-                None => { break 'outer }
-                Some(resolved_val) => {
-                    // Get the input tokens corresponding to the current resolved value
-                    // let consumed_input_tokens =
-                    let mut input_value_until_now: Vec<String> = vec![];
-                    let mut current_ranges: Vec<&Range<usize>> = vec![];
-                    for _ in 0..n_consumed_tokens {
-                        // println!("GOT IN FOR LOOP");
-                        let token = match input_iterator.next() {
-                            Some((_, value)) => { value }
-                            None => bail!("Not enough input values")
-                        };
-                        let range = match input_ranges_iterator.next() {
-                            Some(value) => { value }
-                            None => bail!("Not enough input ranges")
-                        };
-                        input_value_until_now.push(token);
-                        current_ranges.push(range);
-                    }
-                    if check_threshold(n_consumed_tokens, n_skips, threshold) {
-                        let range_start = current_ranges.first().unwrap().start;
-                        let range_end = current_ranges.last().unwrap().end;
-                        parsed_values.push(ParsedValue {
-                            raw_value: input_value_until_now.join(" "),
-                            resolved_value: fst_unformat_resolved_value(&resolved_val),
-                            range: range_start..range_end,
-                        });
-                    }
+                    _ => break 'inner  // includes None and Restart
                 }
+                output_iterator.next();
             }
-            // Going to the next output symbol
-            output_iterator.next();
+            println!("CURRENT RESOLVED VALUE {:?}", current_resolved_value);
+            println!("N CONSUMED TOKENS {:?}", n_consumed_tokens);
+            // We compute the input corresponding to the resolved value
+            let mut input_value_until_now: Vec<String> = vec![];
+            let mut current_ranges: Vec<&Range<usize>> = vec![];
+            for _ in 0..n_consumed_tokens {
+                // println!("GOT IN FOR LOOP");
+                let token = match input_iterator.next() {
+                    Some((_, value)) => { value }
+                    None => bail!("Not enough input values")
+                };
+                let range = match input_ranges_iterator.next() {
+                    Some(value) => { value }
+                    None => bail!("Not enough input ranges")
+                };
+                input_value_until_now.push(token);
+                current_ranges.push(range);
+            }
+            // println!("LENGTH OF RESOLVED VALUE {:?}", resolved_val_length);
+            if check_threshold(n_consumed_tokens, resolved_val_length - n_consumed_tokens, threshold) {
+                let range_start = current_ranges.first().unwrap().start;
+                let range_end = current_ranges.last().unwrap().end;
+                parsed_values.push(ParsedValue {
+                    raw_value: input_value_until_now.join(" "),
+                    resolved_value: fst_unformat_resolved_value(&current_resolved_value),
+                    range: range_start..range_end,
+                });
+            }
+
         }
         Ok(parsed_values)
-        // // Get the input tokens corresponding to the current resolved value
-        // // let consumed_input_tokens =
-        // let mut input_value_until_now: Vec<String> = vec![];
-        // let mut current_ranges: Vec<&Range<usize>> = vec![];
-        // for _ in 0..n_consumed_tokens {
-        //     // println!("GOT IN FOR LOOP");
-        //     let token = match input_iterator.next() {
-        //         Some((_, value)) => { value }
-        //         None => bail!("Not enough input values")
-        //     };
-        //     let range = match input_ranges_iterator.next() {
-        //         Some(value) => { value }
-        //         None => bail!("Not enough input ranges")
-        //     };
-        //     input_value_until_now.push(token);
-        //     current_ranges.push(range);
-        // }
-        // println!("INPUT VALUE UNTIL NOW {:?}", input_value_until_now);
-        // // Add the parsed value if it meets the threshold condition
-        // println!("THRESHOLD: n_consumed_tokens {:?}", n_consumed_tokens);
-        // println!("N_SKIPS: n_skips {:?}", n_skips);
-        // println!("CHECK_THRESHOLD RESULT: {:?}", check_threshold(n_consumed_tokens, n_skips, threshold));
-        // if check_threshold(n_consumed_tokens, n_skips, threshold) {
-        //     let range_start = current_ranges.first().unwrap().start;
-        //     let range_end = current_ranges.last().unwrap().end;
-        //     parsed_values.push(ParsedValue {
-        //         raw_value: input_value_until_now.join(" "),
-        //         resolved_value: fst_unformat_resolved_value(&current_resolved_value),
-        //         range: range_start..range_end,
-        //     });
-        // }
-
-
-        // 'outer: loop {
-        //     // First consume the output symbols corresponding to the next parsed value
-        //     let mut n_consumed_tokens = 0;
-        //     let mut n_skips = 0;
-        //     let mut finished = false;
-        //     let mut current_resolved_value: String = "".to_string();
-        //     // let mut skip_seen = false;
-        //     'inner: loop {
-        //         match output_iterator.peek() {
-        //             Some((_, value)) => {
-        //                 println!("CURRENT VALUE {:?}", value);
-        //                 if n_consumed_tokens == 0 && value != SKIP {
-        //                     // println!("VALUE {:?}", value);
-        //                     // Consuming first token: setting the current resolved value
-        //                     // if value == SKIP {
-        //                     //     // println!("FOOOOO {:?}", n_consumed_tokens);
-        //                     //     bail!("Skipping before any value is parsed")
-        //                     // }
-        //                     current_resolved_value = value.to_string();
-        //                 }
-        //                 // println!("current resolved value{:?}", current_resolved_value);
-        //                 if (value != SKIP && value != current_resolved_value.as_str()) || (value == SKIP && n_consumed_tokens > 0) {
-        //                     break 'inner;
-        //                 }
-        //                 if value == SKIP {
-        //                     n_skips += 1;
-        //                     // skip_seen = true;
-        //                 } else {
-        //                     n_consumed_tokens += 1;
-        //                     // n_skips = 0
-        //                 }
-        //             }
-        //             None => {
-        //                 finished = true;
-        //                 break 'inner;
-        //             }
-        //         }
-        //         output_iterator.next();
-        //         // drop(current_resolved_value);
-        //         println!("n_consumed_tokens {:?}", n_consumed_tokens);
-        //         println!("n_skips {:?}", n_skips);
-        //     }
-        //
-        //     // Get the input tokens corresponding to the current resolved value
-        //     // let consumed_input_tokens =
-        //     let mut input_value_until_now: Vec<String> = vec![];
-        //     let mut current_ranges: Vec<&Range<usize>> = vec![];
-        //     for _ in 0..n_consumed_tokens {
-        //         // println!("GOT IN FOR LOOP");
-        //         let token = match input_iterator.next() {
-        //             Some((_, value)) => { value }
-        //             None => bail!("Not enough input values")
-        //         };
-        //         let range = match input_ranges_iterator.next() {
-        //             Some(value) => { value }
-        //             None => bail!("Not enough input ranges")
-        //         };
-        //         input_value_until_now.push(token);
-        //         current_ranges.push(range);
-        //     }
-        //     println!("INPUT VALUE UNTIL NOW {:?}", input_value_until_now);
-        //     // Add the parsed value if it meets the threshold condition
-        //     println!("THRESHOLD: n_consumed_tokens {:?}", n_consumed_tokens);
-        //     println!("N_SKIPS: n_skips {:?}", n_skips);
-        //     println!("CHECK_THRESHOLD RESULT: {:?}", check_threshold(n_consumed_tokens, n_skips, threshold));
-        //     if check_threshold(n_consumed_tokens, n_skips, threshold) {
-        //         let range_start = current_ranges.first().unwrap().start;
-        //         let range_end = current_ranges.last().unwrap().end;
-        //         parsed_values.push(ParsedValue {
-        //             raw_value: input_value_until_now.join(" "),
-        //             resolved_value: fst_unformat_resolved_value(&current_resolved_value),
-        //             range: range_start..range_end,
-        //         });
-        //     }
-        //     if finished {
-        //         break 'outer
-        //     }
-        // }
-        // Ok(parsed_values)
-        // let mut output_iterator = whitespace_tokenizer(&string_path.ostring).peekable();
-        // let mut input_iterator = whitespace_tokenizer(&string_path.istring).peekable();
-        // let mut start_new_resolved_value = true;
-        // for (_, token) in whitespace_tokenizer(&string_path.ostring) {
-        //     if last_output
-        //     // if start_new_resolved_value {
-        //     //     let current_resolved_value = token;
-        //     //     let
-        //     // }
-        //
-        // }
-
-        //     if token == SKIP {
-        //         n_skips += 1;
-        //         continue;
-        //     }
-        //     if advance_input {
-        //         if let Some((_, value)) = input_iterator.next() {
-        //             current_input_token = value;
-        //             current_input_token_idx += 1;
-        //         }
-        //     }
-        //     if current_input_token != token {
-        //         let range_start = current_ranges.first().unwrap().start;
-        //         let range_end = current_ranges.last().unwrap().end;
-        //         if check_threshold(input_value_until_now.len(), n_skips, threshold) {
-        //             parsed_values.push(ParsedValue {
-        //                 raw_value: input_value_until_now.join(" "),
-        //                 resolved_value: fst_unformat_resolved_value(&token),
-        //                 range: range_start..range_end,
-        //             });
-        //         }
-        //         // Reinitialize accumulators
-        //         n_skips = 0;
-        //         input_value_until_now.clear();
-        //         current_ranges.clear();
-        //         advance_input = false;
-        //     } else {
-        //         input_value_until_now.push(token);
-        //         current_ranges.push(
-        //             tokens_range
-        //                 .get(current_input_token_idx)
-        //                 .ok_or_else(|| format_err!("Decoding went wrong"))?,
-        //         );
-        //         advance_input = true;
-        //     }
-        // }
-        // Ok(parsed_values)
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`. `decoding_threshold` is
@@ -605,7 +482,7 @@ impl Parser {
             true,
         )?;
         // FIXME
-        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new() })
+        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_length: HashMap::new() })
     }
 }
 
@@ -789,6 +666,7 @@ mod tests {
                 range: 16..27,
             }]
         );
+        println!("LENGTHS: {:?}", parser.value_to_length);
         let parsed = parser.run("je veux écouter jacques", 0.5).unwrap();
         assert_eq!(
             parsed,
@@ -928,6 +806,22 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn test_repeated_words() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let parsed = parser
+            .run("the rolling stones stones stones stones", 0.5)
+            .unwrap();
+        assert_eq!(parsed, vec![]);
+    }
+
 
     #[test]
     fn real_world_gazetteer() {
