@@ -42,8 +42,8 @@ impl<'a> InternalEntityValue<'a> {
 pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
-    word_to_value: HashMap<usize, HashSet<usize>>,  // maps word indec to set of values containing word
-    value_to_words: HashMap<usize, Vec<usize>>  // maps resolved value to raw words composing it
+    word_to_value: HashMap<i32, HashSet<i32>>,  // maps word indec to set of values containing word
+    value_to_words: HashMap<i32, Vec<i32>>  // maps resolved value to raw words composing it
 }
 
 #[derive(Serialize, Deserialize)]
@@ -161,16 +161,16 @@ impl Parser {
             // // Update current head
             // current_head = next_head;
             // Add the mapping from token to resolved value
-            self.word_to_value.entry(token_idx as usize)
-                .and_modify(|e| { (*e).insert(resolved_value_idx as usize); })
+            self.word_to_value.entry(token_idx)
+                .and_modify(|e| { (*e).insert(resolved_value_idx); })
                 .or_insert({
                     let mut h = HashSet::new();
-                    h.insert(resolved_value_idx as usize);
+                    h.insert(resolved_value_idx);
                     h
                 });
-            self.value_to_words.entry(resolved_value_idx as usize)
-            .and_modify(|e| { (*e).push(token_idx as usize) })
-                .or_insert(vec![token_idx as usize]);
+            self.value_to_words.entry(resolved_value_idx)
+            .and_modify(|e| { (*e).push(token_idx) })
+                .or_insert(vec![token_idx]);
             raw_value_len += 1;
         }
         // let start_state = self.fst.start();
@@ -267,7 +267,7 @@ impl Parser {
                     let next_head = input_fst.add_state();
                     // println!("VALUE: {:?}", self.symbol_table.find_index(value));
                     if output_res {
-                        for res_value in self.word_to_value.get(&(value as usize)).unwrap() {
+                        for res_value in self.word_to_value.get(&value).unwrap() {
                             // println!("RES_VALUE: {:?}", self.symbol_table.find_index(*res_value as i32));
                             input_fst.add_arc(current_head, value, *res_value as i32, 0.0, next_head);
                         }
@@ -472,7 +472,7 @@ impl Parser {
                 let res_val_idx = self.symbol_table.find_symbol(&res_val)?.ok_or_else(|| format_err!("Missing key"))?;
                 let mut current_head = restart_state;
                 // println!("RES VAAAAAAL {:?}", res_val);
-                for tok_idx in self.value_to_words.get(&(res_val_idx as usize)).ok_or_else(|| format_err!("Missing key"))? {
+                for tok_idx in self.value_to_words.get(&res_val_idx).ok_or_else(|| format_err!("Missing key"))? {
                     let next_head = refined_fst.add_state();
                     // println!("ADDING TOKEN {:?}", self.symbol_table.find_index(*tok_idx as i32));
                     refined_fst.add_arc(current_head, *tok_idx as i32, CONSUMED_IDX, 0.0, next_head);
