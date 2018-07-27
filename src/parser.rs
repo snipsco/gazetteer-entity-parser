@@ -42,8 +42,8 @@ impl<'a> InternalEntityValue<'a> {
 pub struct Parser {
     fst: fst::Fst,
     symbol_table: SymbolTable,
-    word_to_value: HashMap<i32, HashSet<i32>>,  // maps word indec to set of values containing word
-    value_to_length: HashMap<i32, usize>  // maps resolved value to number of words composing its
+    word_to_value: HashMap<usize, HashSet<usize>>,  // maps word indec to set of values containing word
+    value_to_words: HashMap<usize, Vec<usize>>  // maps resolved value to raw words composing it
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +89,7 @@ impl Parser {
         if restart_idx != RESTART_IDX {
             return Err(format_err!("Wrong restart index: {}", restart_idx));
         }
-        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_length: HashMap::new() })
+        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_words: HashMap::new() })
     }
 
     /// This function returns a FST that checks that at least one of the words in
@@ -161,17 +161,18 @@ impl Parser {
             // // Update current head
             // current_head = next_head;
             // Add the mapping from token to resolved value
-            self.word_to_value.entry(token_idx)
-                .and_modify(|e| { (*e).insert(resolved_value_idx); })
+            self.word_to_value.entry(token_idx as usize)
+                .and_modify(|e| { (*e).insert(resolved_value_idx as usize); })
                 .or_insert({
                     let mut h = HashSet::new();
-                    h.insert(resolved_value_idx);
+                    h.insert(resolved_value_idx as usize);
                     h
                 });
+            self.value_to_words.entry(resolved_value_idx as usize)
+            .and_modify(|e| { (*e).push(token_idx as usize) })
+                .or_insert(vec![token_idx as usize]);
             raw_value_len += 1;
         }
-        self.value_to_length.entry(resolved_value_idx)
-            .or_insert(raw_value_len);
         // let start_state = self.fst.start();
         let next_head = self.fst.add_state();
         // self.fst.add_arc(restart_state, resolved_value_idx, resolved_value_idx, -(1.0 + 100.0 - (raw_value_len as f32)), next_head);
@@ -243,8 +244,10 @@ impl Parser {
     }
 
     /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
-    // of the tokens composing it
-    fn build_input_fst(&self, input: &str) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>)> {
+    /// of the tokens composing it
+    /// `output_res` is a boolean controlling whether the input fst should output the input token
+    /// (false) or the resolved value (true)
+    fn build_input_fst(&self, input: &str, output_res: bool) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>)> {
         // build the input fst
         let mut input_fst = fst::Fst::new();
         let mut tokens_ranges: Vec<Range<usize>> = vec![];
@@ -256,16 +259,22 @@ impl Parser {
                 Some(value) => {
                     if restart_to_be_inserted {
                         let next_head = input_fst.add_state();
-                        println!("{:?}", RESTART);
+                        // println!("{:?}", RESTART);
                         input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
                         current_head = next_head;
                         restart_to_be_inserted = false;
                     }
                     let next_head = input_fst.add_state();
-                    println!("VALUE: {:?}", self.symbol_table.find_index(value));
-                    for res_value in self.word_to_value.get(&value).unwrap() {
-                        println!("RES_VALUE: {:?}", self.symbol_table.find_index(*res_value));
-                        input_fst.add_arc(current_head, value, *res_value, 0.0, next_head);
+                    // println!("VALUE: {:?}", self.symbol_table.find_index(value));
+                    if output_res {
+                        for res_value in self.word_to_value.get(&(value as usize)).unwrap() {
+                            // println!("RES_VALUE: {:?}", self.symbol_table.find_index(*res_value as i32));
+                            input_fst.add_arc(current_head, value, *res_value as i32, 0.0, next_head);
+                        }
+                    } else {
+                        // println!("ADDING TO INPIT FST TOKEN {:?}", self.symbol_table.find_index(value));
+                        input_fst.add_arc(current_head, value, value, 0.0, next_head);
+                        // input_fst.add_arc(current_head, value, EPS_IDX, 0.0, next_head);
                     }
                     tokens_ranges.push(token_range);
                     current_head = next_head;
@@ -280,28 +289,17 @@ impl Parser {
         }
         // Set final state
         input_fst.set_final(current_head, 0.0);
-        // input_fst.optimize();
         input_fst.arc_sort(false);
+        // input_fst.optimize();
         // println!("INPUT FST NUM STATES {:?}", input_fst.num_states());
-        input_fst.write_file("input_fst.fst").unwrap();
-        self.symbol_table.write_file("symbol_table.txt", false);
+        // input_fst.write_file("input_fst.fst").unwrap();
+        // self.symbol_table.write_file("symbol_table.txt", false);
         Ok((input_fst, tokens_ranges))
     }
 
-    /// Decode the single shortest path
-    fn decode_shortest_path(
-        &self,
-        shortest_path: &fst::Fst,
-        tokens_range: &Vec<Range<usize>>,
-        decoding_threshold: f32,
-    ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let mut path_iterator = StringPathsIterator::new(
-            &shortest_path,
-            &self.symbol_table,
-            &self.symbol_table,
-            true,
-            true,
-        );
+    /// Return the one shortest path
+    fn get_1_shortest_path(&self, fst: &fst::Fst,) -> GazetteerParserResult<StringPath> {
+        let shortest_path = fst.shortest_path(1, false, false);
 
         // DEBUG
         // for path in StringPathsIterator::new(
@@ -311,15 +309,46 @@ impl Parser {
         //     true,
         //     true,
         // ) {
-        //     println!("PATH: {:?}", path);
+        //     println!("BUG N PATHS: {:?}", path);
         // }
-        //
+
+
+        let mut path_iterator = StringPathsIterator::new(
+            &shortest_path,
+            &self.symbol_table,
+            &self.symbol_table,
+            true,
+            true,
+        );
         let path = path_iterator
             .next()
             .unwrap_or_else(|| Err(format_err!("Empty string path iterator")))?;
+        Ok(path)
+    }
 
+    /// Decode the single shortest path
+    fn decode_shortest_path(
+        &self,
+        shortest_path: &StringPath,
+        tokens_range: &Vec<Range<usize>>,
+        decoding_threshold: f32,
+    ) -> GazetteerParserResult<Vec<ParsedValue>> {
+        // let mut path_iterator = StringPathsIterator::new(
+        //     &shortest_path,
+        //     &self.symbol_table,
+        //     &self.symbol_table,
+        //     true,
+        //     true,
+        // );
+        //
+        //
+        // let path = path_iterator
+        //     .next()
+        //     .unwrap_or_else(|| Err(format_err!("Empty string path iterator")))?;
+        // println!("PATH: {:?}", shortest_path);
+        // let path = self.get_1_shortest_path(fst)
         Ok(self.format_string_path(
-            &path,
+            &shortest_path,
             &tokens_range,
             decoding_threshold,
         )?)
@@ -332,6 +361,7 @@ impl Parser {
         tokens_range: &Vec<Range<usize>>,
         threshold: f32,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
+
         // let mut input_iterator = whitespace_tokenizer(&string_path.istring);
         let mut parsed_values: Vec<ParsedValue> = vec![];
         // let mut input_value_until_now: Vec<String> = vec![];
@@ -343,8 +373,8 @@ impl Parser {
         // let mut current_input_token_idx: usize = 0;
         // let mut last_output_skipped: bool = false;
         // let mut n_skips: usize = 0;
-        let mut output_iterator = whitespace_tokenizer(&string_path.ostring).peekable();
-        let mut input_iterator = whitespace_tokenizer(&string_path.istring).peekable();
+        let mut output_iterator = whitespace_tokenizer(&string_path.ostring);
+        let mut input_iterator = whitespace_tokenizer(&string_path.istring);
         let mut input_ranges_iterator = tokens_range.iter();
 
         // start the iterators
@@ -354,41 +384,29 @@ impl Parser {
         // let consumed_string = CONSUMED.to_string();
         // let skip_string = SKIP.to_string();
 
-        // Assumptions: the input and output strings have the same length, with the i-th input
-        // token mapping to the i-th output token
+        // Assumptions: the output values can be <skip>, <consumed>, <restart>, or resolved values
+        // The resolved value always comes after a certain number of consumed and skips symbols
         'outer: loop {
             // First we consume the output values corresponding to the same resolved value, and
-            // compute the number of tokens consumed
-            let current_resolved_value = match output_iterator.peek() {
-                Some((_, value)) => value.clone(),
-                None => break 'outer
-            };
-            if current_resolved_value == RESTART {
-                output_iterator.next();
-                continue
-            }
-            let resolved_val_idx = match self.symbol_table.find_symbol(&current_resolved_value)? {
-                Some(value) => value,
-                None => bail!("Resolved value absent from symbol table")
-            };
-            let resolved_val_length = self.value_to_length.get(&resolved_val_idx).ok_or_else(|| format_err!("Missing length for resolved value"))?;
+            // compute the number of tokens consumed and skipped
             let mut n_consumed_tokens = 0;
-            'inner: loop {
-                match output_iterator.peek() {
-                    Some((_, ref value)) if value == &current_resolved_value => {
-                        if n_consumed_tokens < *resolved_val_length {
-                            n_consumed_tokens += 1;
-                        } else {
-                            break 'inner
+            let mut n_skips = 0;
+
+            let current_resolved_value = 'output: loop {
+                match output_iterator.next() {
+                    Some((_, value)) => {
+                        match value.as_ref() {
+                            CONSUMED => {n_consumed_tokens += 1;}
+                            SKIP => {n_skips += 1;}
+                            val => {break 'output val.to_string()}
                         }
                     }
-                    _ => break 'inner  // includes None and Restart
+                    None => {break 'outer}
                 }
-                output_iterator.next();
-            }
-            println!("CURRENT RESOLVED VALUE {:?}", current_resolved_value);
-            println!("N CONSUMED TOKENS {:?}", n_consumed_tokens);
-            // We compute the input corresponding to the resolved value
+            };
+
+            // println!("CURRENT RESOLVED VALUE {:?}", current_resolved_value);
+            // println!("N CONSUMED TOKENS {:?}", n_consumed_tokens);
             let mut input_value_until_now: Vec<String> = vec![];
             let mut current_ranges: Vec<&Range<usize>> = vec![];
             for _ in 0..n_consumed_tokens {
@@ -397,6 +415,7 @@ impl Parser {
                     Some((_, value)) => { value }
                     None => bail!("Not enough input values")
                 };
+                // resolved_value_tokens.pop(token);
                 let range = match input_ranges_iterator.next() {
                     Some(value) => { value }
                     None => bail!("Not enough input ranges")
@@ -404,8 +423,7 @@ impl Parser {
                 input_value_until_now.push(token);
                 current_ranges.push(range);
             }
-            // println!("LENGTH OF RESOLVED VALUE {:?}", resolved_val_length);
-            if check_threshold(n_consumed_tokens, resolved_val_length - n_consumed_tokens, threshold) {
+            if check_threshold(n_consumed_tokens, n_skips, threshold) {
                 let range_start = current_ranges.first().unwrap().start;
                 let range_end = current_ranges.last().unwrap().end;
                 parsed_values.push(ParsedValue {
@@ -414,7 +432,6 @@ impl Parser {
                     range: range_start..range_end,
                 });
             }
-
         }
         Ok(parsed_values)
     }
@@ -426,7 +443,7 @@ impl Parser {
         input: &str,
         decoding_threshold: f32,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let (input_fst, tokens_range) = self.build_input_fst(input)?;
+        let (input_fst, tokens_range) = self.build_input_fst(input, true)?;
         // Compose with the parser fst
         let composition = operations::compose(&input_fst, &self.fst);
         // composition.write_file("composition.fst").unwrap();
@@ -434,9 +451,58 @@ impl Parser {
         if composition.num_states() == 0 {
             return Ok(vec![]);
         }
-        let shortest_path = composition.shortest_path(1, false, false);
+        // let shortest_path = composition.shortest_path(1, false, false);
+        let shortest_path = self.get_1_shortest_path(&composition)?;
+        // println!("SHORTEST PATH: {:?}", shortest_path);
+
+        // Create a refined FST to parse the possible resolved values after the first path
+        let mut possible_resolved_values: HashSet<String> = HashSet::new();
+        let mut refined_fst = fst::Fst::new();
+        let start_state = refined_fst.add_state();
+        refined_fst.set_start(start_state);
+        let restart_state = refined_fst.add_state();
+        refined_fst.add_arc(start_state, RESTART_IDX, RESTART_IDX, 0.0, restart_state);
+        refined_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
+        for (_, res_val) in whitespace_tokenizer(&shortest_path.ostring) {
+            if res_val == RESTART {
+                continue
+            }
+            if !(possible_resolved_values.contains(&res_val)) {
+                possible_resolved_values.insert(res_val.clone());
+                let res_val_idx = self.symbol_table.find_symbol(&res_val)?.ok_or_else(|| format_err!("Missing key"))?;
+                let mut current_head = restart_state;
+                // println!("RES VAAAAAAL {:?}", res_val);
+                for tok_idx in self.value_to_words.get(&(res_val_idx as usize)).ok_or_else(|| format_err!("Missing key"))? {
+                    let next_head = refined_fst.add_state();
+                    // println!("ADDING TOKEN {:?}", self.symbol_table.find_index(*tok_idx as i32));
+                    refined_fst.add_arc(current_head, *tok_idx as i32, CONSUMED_IDX, 0.0, next_head);
+                    refined_fst.add_arc(current_head, EPS_IDX, SKIP_IDX, 1.0, next_head);
+                    current_head = next_head;
+                }
+                // Add the output value
+                let final_head = refined_fst.add_state();
+                refined_fst.add_arc(current_head, EPS_IDX, res_val_idx, 0.0, final_head);
+                refined_fst.set_final(final_head, 0.0);
+            }
+        }
+        refined_fst.arc_sort(true);
+        refined_fst.closure_plus();
+        // refined_fst.write_file("refined_fst.fst").unwrap();
+        let (refined_input_fst, refined_tokens_range) = self.build_input_fst(input, false)?;
+        // refined_input_fst.write_file("refined_input_fst").unwrap();
+        // self.symbol_table.write_file_text("symbol_table").unwrap();
+
+        let refined_composition = operations::compose(&refined_input_fst, &refined_fst);
+        // composition.write_file("composition.fst").unwrap();
+        // println!("COMPOSITION NUM STATES {:?}", composition.num_states());
+        if refined_composition.num_states() == 0 {
+            // println!("REFINED COMPOSITION NUM STATES {:?}", refined_composition.num_states());
+            return Ok(vec![]);
+        }
+        let refined_shortest_path = self.get_1_shortest_path(&refined_composition)?;
+        // println!("REFINED SHORTEST PATH: {:?}", refined_shortest_path);
         // println!("SHORTEST PATH NUM STATES {:?}", shortest_path.num_states());
-        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range, decoding_threshold)?;
+        let parsing = self.decode_shortest_path(&refined_shortest_path, &refined_tokens_range, decoding_threshold)?;
         // println!("PARSING: {:?}", parsing);
         Ok(parsing)
     }
@@ -482,7 +548,7 @@ impl Parser {
             true,
         )?;
         // FIXME
-        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_length: HashMap::new() })
+        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_words: HashMap::new() })
     }
 }
 
@@ -666,7 +732,7 @@ mod tests {
                 range: 16..27,
             }]
         );
-        println!("LENGTHS: {:?}", parser.value_to_length);
+        // println!("VALUE TO WORDS: {:?}", parser.value_to_words);
         let parsed = parser.run("je veux écouter jacques", 0.5).unwrap();
         assert_eq!(
             parsed,
@@ -713,7 +779,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_parser_with_mixed_ordered_entity() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
@@ -723,7 +788,13 @@ mod tests {
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let parsed = parser.run("rolling the stones", 0.5).unwrap();
-        assert_eq!(parsed, vec![]);
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 8..18,
+                raw_value: "the stones".to_string()}]
+            );
     }
 
     #[test]
@@ -817,21 +888,32 @@ mod tests {
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let parsed = parser
-            .run("the rolling stones stones stones stones", 0.5)
+            .run("the the the", 0.5)
             .unwrap();
         assert_eq!(parsed, vec![]);
+
+        let parsed = parser
+            .run("the the the rolling stones stones stones stones", 1.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 8..26,
+            }]
+        );
     }
 
-
-    #[test]
-    fn real_world_gazetteer() {
-        let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
-        let parser = Parser::from_gazetteer(&gaz).unwrap();
-        parser.dump("./test_artist_parser").unwrap();
-
-        let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
-        let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
-        parser2.dump("./test_album_parser").unwrap();
-
-    }
+    // #[test]
+    // fn real_world_gazetteer() {
+    //     let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
+    //     let parser = Parser::from_gazetteer(&gaz).unwrap();
+    //     parser.dump("./test_artist_parser").unwrap();
+    //
+    //     let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+    //     let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
+    //     parser2.dump("./test_album_parser").unwrap();
+    //
+    // }
 }
