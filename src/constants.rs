@@ -9,3 +9,7 @@ pub const RESTART_IDX: i32 = 3;
 pub const RESOLVED_SYMBOL: &str = "__RESOLVED__";
 pub const SPACE_SYMBOL: &str = "__SPACE__";
 pub const METADATA_FILENAME: &str = "metadata.json";
+pub const FST_FILENAME: &str = "fst";
+pub const SYMBOLTABLE_FILENAME: &str = "symbol_table";
+pub const WORD_TO_VALUE_FILENAME: &str = "word_to_value";
+pub const VALUE_TO_WORDS_FILENAME: &str = "value_to_words";

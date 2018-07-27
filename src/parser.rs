@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use constants::RESTART_IDX;
-use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX, CONSUMED, CONSUMED_IDX};
+use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX, CONSUMED, CONSUMED_IDX, WORD_TO_VALUE_FILENAME, VALUE_TO_WORDS_FILENAME, FST_FILENAME, SYMBOLTABLE_FILENAME};
 use data::EntityValue;
 use data::Gazetteer;
 use errors::GazetteerParserResult;
@@ -15,6 +15,8 @@ use std::ops::Range;
 use std::path::Path;
 use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
+use serde::{Deserialize, Serialize};
+use rmps::{Deserializer, Serializer, from_read};
 // use std::intrinsics::breakpoint;
 
 #[derive(Debug)]
@@ -51,6 +53,8 @@ struct ParserConfig {
     fst_filename: String,
     symbol_table_filename: String,
     version: String,
+    value_to_words: String,
+    word_to_value: String
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
@@ -111,7 +115,7 @@ impl Parser {
     //     self.fst
     //         .add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, current_head);
     //     let next_head = self.fst.add_state();
-    //     for (_, token) in whitespace_tokenizer(verbalized_value) {
+    //     for (_, token) in whitespace_tokdenizer(verbalized_value) {
     //         let token_idx = self.symbol_table.add_symbol(&token)?;
     //         self.fst.add_arc(
     //             current_head,
@@ -509,9 +513,11 @@ impl Parser {
 
     fn get_parser_config(&self) -> ParserConfig {
         ParserConfig {
-            fst_filename: "fst".to_string(),
-            symbol_table_filename: "symbol_table".to_string(),
+            fst_filename: FST_FILENAME.to_string(),
+            symbol_table_filename: SYMBOLTABLE_FILENAME.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            value_to_words: VALUE_TO_WORDS_FILENAME.to_string(),
+            word_to_value: WORD_TO_VALUE_FILENAME.to_string()
         }
     }
 
@@ -524,15 +530,23 @@ impl Parser {
             )
         })?;
         let config = self.get_parser_config();
-        let config_string = serde_json::to_string(&config)?;
-        let mut buffer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
-        buffer.write(config_string.as_bytes())?;
+        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
+        serde_json::to_writer(writer, &config)?;
+
         self.fst
             .write_file(folder_name.as_ref().join(config.fst_filename))?;
         self.symbol_table.write_file(
             folder_name.as_ref().join(config.symbol_table_filename),
-            false,
+            true,
         )?;
+
+        let mut word_to_val_writer = fs::File::create(folder_name.as_ref().join(WORD_TO_VALUE_FILENAME))?;
+        self.word_to_value.serialize(&mut Serializer::new(&mut word_to_val_writer))?;
+
+        let mut value_to_words_writer =
+        fs::File::create(folder_name.as_ref().join(VALUE_TO_WORDS_FILENAME))?;
+        self.value_to_words.serialize(&mut Serializer::new(&mut value_to_words_writer))?;
+
         Ok(())
     }
 
@@ -547,8 +561,17 @@ impl Parser {
             folder_name.as_ref().join(config.symbol_table_filename),
             true,
         )?;
-        // FIXME
-        Ok(Parser { fst, symbol_table, word_to_value: HashMap::new(), value_to_words: HashMap::new() })
+        let word_to_value_path = folder_name.as_ref().join(config.word_to_value);
+        let word_to_value_file = fs::File::open(&word_to_value_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", word_to_value_path))?;
+        let word_to_value = from_read(word_to_value_file)?;
+
+        let value_to_words_path = folder_name.as_ref().join(config.value_to_words);
+        let value_to_words_file = fs::File::open(&value_to_words_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", value_to_words_path))?;
+        let value_to_words = from_read(value_to_words_file)?;
+
+        Ok(Parser { fst, symbol_table, word_to_value, value_to_words })
     }
 }
 
@@ -579,10 +602,18 @@ mod tests {
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
         assert!(parser.fst.equals(&reloaded_parser.fst));
+        assert!(parser.word_to_value == reloaded_parser.word_to_value);
+        for (idx, _) in parser.word_to_value.clone() {
+            assert!(parser.symbol_table.find_index(idx).unwrap().unwrap() == reloaded_parser.symbol_table.find_index(idx).unwrap().unwrap())
+        }
+        for (idx, _) in parser.value_to_words.clone() {
+            assert!(parser.symbol_table.find_index(idx).unwrap().unwrap() == reloaded_parser.symbol_table.find_index(idx).unwrap().unwrap())
+        }
+        assert!(parser.value_to_words == reloaded_parser.value_to_words);
     }
 
     #[test]
-    fn test_parser_first() {
+    fn test_parser_base() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -905,15 +936,14 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn real_world_gazetteer() {
-    //     let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
-    //     let parser = Parser::from_gazetteer(&gaz).unwrap();
-    //     parser.dump("./test_artist_parser").unwrap();
-    //
-    //     let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
-    //     let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
-    //     parser2.dump("./test_album_parser").unwrap();
-    //
-    // }
+    #[test]
+    fn real_world_gazetteer() {
+        let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
+        let parser = Parser::from_gazetteer(&gaz).unwrap();
+        parser.dump("./test_artist_parser").unwrap();
+
+        let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+        let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
+        parser2.dump("./test_album_parser").unwrap();
+    }
 }
