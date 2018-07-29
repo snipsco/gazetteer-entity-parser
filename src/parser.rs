@@ -1,3 +1,5 @@
+use std::cmp::max;
+use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use constants::RESTART_IDX;
 use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX, CONSUMED, CONSUMED_IDX, WORD_TO_VALUE_FILENAME, VALUE_TO_WORDS_FILENAME, FST_FILENAME, SYMBOLTABLE_FILENAME};
@@ -251,13 +253,48 @@ impl Parser {
     /// of the tokens composing it
     /// `output_res` is a boolean controlling whether the input fst should output the input token
     /// (false) or the resolved value (true)
-    fn build_input_fst(&self, input: &str, output_res: bool) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>)> {
+    fn build_input_fst(&self, input: &str, output_res: bool, decoding_threshold: f32) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>, HashSet<i32>)> {
         // build the input fst
         let mut input_fst = fst::Fst::new();
         let mut tokens_ranges: Vec<Range<usize>> = vec![];
         let mut current_head = input_fst.add_state();
+        let mut possible_resolved_values: HashSet<i32> = HashSet::new();
+        let mut possible_resolved_values_counts: HashMap<i32, (i32, i32)> = HashMap::new();
+        let mut admissible_tokens: HashSet<i32> = HashSet::new();
         input_fst.set_start(current_head);
         let mut restart_to_be_inserted: bool = false;
+
+        // We do a first pass to check what the possible resolved values are
+        // (taking threshold into account)
+        for (_, token) in whitespace_tokenizer(input) {
+            match self.symbol_table.find_symbol(&token)? {
+                Some(value) => {
+                    for res_value in self.word_to_value.get(&value).ok_or_else(|| format_err!("Missing value {:?} from word_to_value", value))? {
+                        possible_resolved_values_counts.entry(*res_value)
+                        .and_modify(|(_, count)| *count += 1)
+                        .or_insert((self.value_to_words.get(&res_value).ok_or_else(|| format_err!("Missing value {:?} from value_to_words", res_value))?.len() as i32, 1));
+                    }
+                }
+                None => continue
+            };
+        }
+
+        // From the counts, we extract the possible resolved values
+        for (res_val, (len, count)) in &possible_resolved_values_counts {
+            // println!("RES VAL {:?}", self.symbol_table.find_index(*res_val));
+            // println!("LEN: {:?}", len);
+            // println!("COUNT: {:?}", count);
+            if check_threshold(*count as usize, max(0, len - count) as usize, decoding_threshold) {
+                possible_resolved_values.insert(*res_val);
+                // println!("ADDING RES_VALUE: {:?}", self.symbol_table.find_index(*res_val));
+                for tok in self.value_to_words.get(&res_val).unwrap() {
+                    admissible_tokens.insert(*tok);
+                    // println!("ADDING ADMISS TOK {:?}", self.symbol_table.find_index(*tok));
+                }
+            }
+        }
+
+
         for (token_range, token) in whitespace_tokenizer(input) {
             match self.symbol_table.find_symbol(&token)? {
                 Some(value) => {
@@ -273,11 +310,28 @@ impl Parser {
                     if output_res {
                         for res_value in self.word_to_value.get(&value).unwrap() {
                             // println!("RES_VALUE: {:?}", self.symbol_table.find_index(*res_value as i32));
-                            input_fst.add_arc(current_head, value, *res_value as i32, 0.0, next_head);
+                            // possible_resolved_values.insert(*res_value);
+                            // possible_resolved_values_counts.entry(*res_value)
+                            // .and_modify(|(len, count)| *count += 1)
+                            // .or_insert((self.value_to_words.get(&value).unwrap().len() as i32, 1));
+                            if possible_resolved_values.contains(res_value) {
+                                input_fst.add_arc(current_head, value, *res_value as i32, 0.0, next_head);
+                            }
                         }
                     } else {
                         // println!("ADDING TO INPIT FST TOKEN {:?}", self.symbol_table.find_index(value));
-                        input_fst.add_arc(current_head, value, value, 0.0, next_head);
+                        // for res_value in self.word_to_value.get(&value).unwrap() {
+                        //     // possible_resolved_values.insert(*res_value);
+                        //     possible_resolved_values_counts.entry(*res_value)
+                        //     .and_modify(|(len, count)| *count += 1)
+                        //     .or_insert((self.value_to_words.get(&value).unwrap().len() as i32, 1));
+                        // }
+                        if admissible_tokens.contains(&value) {
+                            input_fst.add_arc(current_head, value, value, 0.0, next_head);
+                        } else {
+                            restart_to_be_inserted = true;
+                            continue;
+                        }
                         // input_fst.add_arc(current_head, value, EPS_IDX, 0.0, next_head);
                     }
                     tokens_ranges.push(token_range);
@@ -298,7 +352,15 @@ impl Parser {
         // println!("INPUT FST NUM STATES {:?}", input_fst.num_states());
         // input_fst.write_file("input_fst.fst").unwrap();
         // self.symbol_table.write_file("symbol_table.txt", false);
-        Ok((input_fst, tokens_ranges))
+        // for (res_val, (len, count)) in possible_resolved_vprialues_counts {
+        //     println!("RES VAL {:?}", self.symbol_table.find_index(res_val));
+        //     println!("LEN: {:?}", len);
+        //     println!("COUNT: {:?}", count);
+        //     if check_threshold(count as usize, max(0, len - count) as usize, decoding_threshold) {
+        //         possible_resolved_values.insert(res_val);
+        //     }
+        // }
+        Ok((input_fst, tokens_ranges, possible_resolved_values))
     }
 
     /// Return the one shortest path
@@ -440,6 +502,35 @@ impl Parser {
         Ok(parsed_values)
     }
 
+    fn build_resolver_fst(&self, possible_resolved_values: HashSet<i32>) -> GazetteerParserResult<fst::Fst> {
+        let mut resolver_fst = fst::Fst::new();
+        let start_state = resolver_fst.add_state();
+        resolver_fst.set_start(start_state);
+        let restart_state = resolver_fst.add_state();
+        resolver_fst.add_arc(start_state, RESTART_IDX, RESTART_IDX, 0.0, restart_state);
+        resolver_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
+        for res_val in possible_resolved_values {
+            // let bottleneck_state = resolver_fst.add_state();
+            let mut current_head = restart_state;
+            for tok in self.value_to_words.get(&res_val).unwrap() {
+                let next_head = resolver_fst.add_state();
+                resolver_fst.add_arc(current_head, *tok, CONSUMED_IDX, 0.0, next_head);
+                resolver_fst.add_arc(current_head, EPS_IDX, SKIP_IDX, 1.0, next_head);
+                // resolver_fst.add_arc(restart_state, *tok, CONSUMED_IDX, -1.0, bottleneck_state);
+                current_head = next_head;
+            }
+            let final_head = resolver_fst.add_state();
+            resolver_fst.add_arc(current_head, EPS_IDX, res_val, 0.0, final_head);
+            // FIXME: use ranking to set final weight (add it to one of the attributes of the parser)
+            resolver_fst.set_final(final_head, 0.0);
+        }
+        // resolver_fst.optimize();
+        resolver_fst.closure_plus();
+        resolver_fst.arc_sort(true);
+        // resolver_fst.write_file("resolver_fst");
+        Ok(resolver_fst)
+    }
+
     /// Parse the input string `input` and output a vec of `ParsedValue`. `decoding_threshold` is
     /// the minimum fraction of words to match for an entity to be parsed.
     pub fn run(
@@ -447,9 +538,12 @@ impl Parser {
         input: &str,
         decoding_threshold: f32,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let (input_fst, tokens_range) = self.build_input_fst(input, true)?;
+        let (input_fst, tokens_range, possible_resolved_values) = self.build_input_fst(input, false, decoding_threshold)?;
+
+        let resolver_fst = self.build_resolver_fst(possible_resolved_values)?;
+
         // Compose with the parser fst
-        let composition = operations::compose(&input_fst, &self.fst);
+        let composition = operations::compose(&input_fst, &resolver_fst);
         // composition.write_file("composition.fst").unwrap();
         // println!("COMPOSITION NUM STATES {:?}", composition.num_states());
         if composition.num_states() == 0 {
@@ -459,54 +553,56 @@ impl Parser {
         let shortest_path = self.get_1_shortest_path(&composition)?;
         // println!("SHORTEST PATH: {:?}", shortest_path);
 
-        // Create a refined FST to parse the possible resolved values after the first path
-        let mut possible_resolved_values: HashSet<String> = HashSet::new();
-        let mut refined_fst = fst::Fst::new();
-        let start_state = refined_fst.add_state();
-        refined_fst.set_start(start_state);
-        let restart_state = refined_fst.add_state();
-        refined_fst.add_arc(start_state, RESTART_IDX, RESTART_IDX, 0.0, restart_state);
-        refined_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
-        for (_, res_val) in whitespace_tokenizer(&shortest_path.ostring) {
-            if res_val == RESTART {
-                continue
-            }
-            if !(possible_resolved_values.contains(&res_val)) {
-                possible_resolved_values.insert(res_val.clone());
-                let res_val_idx = self.symbol_table.find_symbol(&res_val)?.ok_or_else(|| format_err!("Missing key"))?;
-                let mut current_head = restart_state;
-                // println!("RES VAAAAAAL {:?}", res_val);
-                for tok_idx in self.value_to_words.get(&res_val_idx).ok_or_else(|| format_err!("Missing key"))? {
-                    let next_head = refined_fst.add_state();
-                    // println!("ADDING TOKEN {:?}", self.symbol_table.find_index(*tok_idx as i32));
-                    refined_fst.add_arc(current_head, *tok_idx as i32, CONSUMED_IDX, 0.0, next_head);
-                    refined_fst.add_arc(current_head, EPS_IDX, SKIP_IDX, 1.0, next_head);
-                    current_head = next_head;
-                }
-                // Add the output value
-                let final_head = refined_fst.add_state();
-                refined_fst.add_arc(current_head, EPS_IDX, res_val_idx, 0.0, final_head);
-                refined_fst.set_final(final_head, 0.0);
-            }
-        }
-        refined_fst.arc_sort(true);
-        refined_fst.closure_plus();
-        // refined_fst.write_file("refined_fst.fst").unwrap();
-        let (refined_input_fst, refined_tokens_range) = self.build_input_fst(input, false)?;
-        // refined_input_fst.write_file("refined_input_fst").unwrap();
-        // self.symbol_table.write_file_text("symbol_table").unwrap();
+        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range, decoding_threshold)?;
 
-        let refined_composition = operations::compose(&refined_input_fst, &refined_fst);
-        // composition.write_file("composition.fst").unwrap();
-        // println!("COMPOSITION NUM STATES {:?}", composition.num_states());
-        if refined_composition.num_states() == 0 {
-            // println!("REFINED COMPOSITION NUM STATES {:?}", refined_composition.num_states());
-            return Ok(vec![]);
-        }
-        let refined_shortest_path = self.get_1_shortest_path(&refined_composition)?;
-        // println!("REFINED SHORTEST PATH: {:?}", refined_shortest_path);
-        // println!("SHORTEST PATH NUM STATES {:?}", shortest_path.num_states());
-        let parsing = self.decode_shortest_path(&refined_shortest_path, &refined_tokens_range, decoding_threshold)?;
+        // Create a refined FST to parse the possible resolved values after the first path
+        // let mut possible_resolved_values: HashSet<String> = HashSet::new();
+        // let mut refined_fst = fst::Fst::new();
+        // let start_state = refined_fst.add_state();
+        // refined_fst.set_start(start_state);
+        // let restart_state = refined_fst.add_state();
+        // refined_fst.add_arc(start_state, RESTART_IDX, RESTART_IDX, 0.0, restart_state);
+        // refined_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
+        // for (_, res_val) in whitespace_tokenizer(&shortest_path.ostring) {
+        //     if res_val == RESTART {
+        //         continue
+        //     }
+        //     if !(possible_resolved_values.contains(&res_val)) {
+        //         possible_resolved_values.insert(res_val.clone());
+        //         let res_val_idx = self.symbol_table.find_symbol(&res_val)?.ok_or_else(|| format_err!("Missing key"))?;
+        //         let mut current_head = restart_state;
+        //         // println!("RES VAAAAAAL {:?}", res_val);
+        //         for tok_idx in self.value_to_words.get(&res_val_idx).ok_or_else(|| format_err!("Missing key"))? {
+        //             let next_head = refined_fst.add_state();
+        //             // println!("ADDING TOKEN {:?}", self.symbol_table.find_index(*tok_idx as i32));
+        //             refined_fst.add_arc(current_head, *tok_idx as i32, CONSUMED_IDX, 0.0, next_head);
+        //             refined_fst.add_arc(current_head, EPS_IDX, SKIP_IDX, 1.0, next_head);
+        //             current_head = next_head;
+        //         }
+        //         // Add the output value
+        //         let final_head = refined_fst.add_state();
+        //         refined_fst.add_arc(current_head, EPS_IDX, res_val_idx, 0.0, final_head);
+        //         refined_fst.set_final(final_head, 0.0);
+        //     }
+        // }
+        // refined_fst.arc_sort(true);
+        // refined_fst.closure_plus();
+        // // refined_fst.write_file("refined_fst.fst").unwrap();
+        // let (refined_input_fst, refined_tokens_range, possible_resolved_values) = self.build_input_fst(input, false)?;
+        // // refined_input_fst.write_file("refined_input_fst").unwrap();
+        // // self.symbol_table.write_file_text("symbol_table").unwrap();
+        //
+        // let refined_composition = operations::compose(&refined_input_fst, &refined_fst);
+        // // composition.write_file("composition.fst").unwrap();
+        // // println!("COMPOSITION NUM STATES {:?}", composition.num_states());
+        // if refined_composition.num_states() == 0 {
+        //     // println!("REFINED COMPOSITION NUM STATES {:?}", refined_composition.num_states());
+        //     return Ok(vec![]);
+        // }
+        // let refined_shortest_path = self.get_1_shortest_path(&refined_composition)?;
+        // // println!("REFINED SHORTEST PATH: {:?}", refined_shortest_path);
+        // // println!("SHORTEST PATH NUM STATES {:?}", shortest_path.num_states());
+        // let parsing = self.decode_shortest_path(&refined_shortest_path, &refined_tokens_range, decoding_threshold)?;
         // println!("PARSING: {:?}", parsing);
         Ok(parsing)
     }
@@ -937,6 +1033,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn real_world_gazetteer() {
         let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
         let parser = Parser::from_gazetteer(&gaz).unwrap();
