@@ -28,7 +28,7 @@ pub fn fst_unformat_resolved_value(string: &str) -> String {
 }
 
 /// Check whether the best parsing matches the threshold condition or not
-pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
+pub fn check_threshold(n_decoded: i32, n_skips: i32, threshold: f32) -> bool {
     (n_decoded as f32) / (n_decoded as f32 + n_skips as f32) >= threshold
 }
 
