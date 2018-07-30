@@ -67,6 +67,7 @@ mod constants;
 mod data;
 mod parser;
 mod utils;
+mod symbol_table;
 
 pub use data::{EntityValue, Gazetteer};
 pub use parser::{ParsedValue, Parser};
