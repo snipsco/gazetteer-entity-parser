@@ -352,7 +352,7 @@ impl Parser {
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
 
         let (input_fst, tokens_range, possible_resolved_values) = self.build_input_fst(input, decoding_threshold)?;
-        println!("NUM POSSIBLE RESOLVED VALUES: {:?}", possible_resolved_values.len());
+        // println!("NUM POSSIBLE RESOLVED VALUES: {:?}", possible_resolved_values.len());
         let resolver_fst = self.build_parser_fst(possible_resolved_values)?;
         let composition = operations::compose(&input_fst, &resolver_fst);
         if composition.num_states() == 0 {

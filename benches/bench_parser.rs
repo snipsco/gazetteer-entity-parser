@@ -8,6 +8,7 @@ use rand::distributions::Alphanumeric;
 use rand::seq::sample_iter;
 use rand::thread_rng;
 use rand::Rng;
+use std::collections::{HashSet};
 
 use criterion::Criterion;
 
@@ -21,6 +22,7 @@ fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
 struct RandomStringGenerator {
     unique_strings: Vec<String>,
     rng: rand::ThreadRng,
+    already_generated: HashSet<String>
 }
 
 impl RandomStringGenerator {
@@ -32,17 +34,24 @@ impl RandomStringGenerator {
         RandomStringGenerator {
             unique_strings,
             rng: rng,
+            already_generated: HashSet::new()
         }
     }
 
     fn generate(&mut self, max_words: usize) -> String {
-        let n_words = self.rng.gen_range(1, max_words);
-        let mut s: Vec<String> = vec![];
-        for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
-        {
-            s.push(self.unique_strings.get(sample_idx).unwrap().to_string())
+        loop {
+            let n_words = self.rng.gen_range(1, max_words);
+            let mut s: Vec<String> = vec![];
+            for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
+            {
+                s.push(self.unique_strings.get(sample_idx).unwrap().to_string());
+            }
+            let value = s.join(" ");
+            if !self.already_generated.contains(&value) {
+                self.already_generated.insert(value.clone());
+                break value
+            }
         }
-        s.join(" ")
     }
 }
 
@@ -52,8 +61,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     for _ in 1..150000 {
         let val = rsg.generate(10);
         gazetteer.add(EntityValue {
-            raw_value: val.clone(),
-            resolved_value: val.to_lowercase(),
+            raw_value: val.clone().to_lowercase(),
+            resolved_value: val,
         });
     }
     let parser = Parser::from_gazetteer(&gazetteer).unwrap();
@@ -65,7 +74,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut rsg = RandomStringGenerator::new(100);
     let mut gazetteer = Gazetteer::new();
     for _ in 1..100000 {
-        let val = rsg.generate(4);
+        let val = rsg.generate(5);
         gazetteer.add(EntityValue {
             raw_value: val.clone(),
             resolved_value: val.to_lowercase(),
@@ -74,7 +83,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
     c.bench_function("Parse random value - high redundancy", move |b| {
-        b.iter(|| parser.run(&rsg.generate(4), 0.5))
+        b.iter(|| parser.run(&rsg.generate(4), 0.6))
     });
 
 }
