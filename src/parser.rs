@@ -431,8 +431,9 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     extern crate tempfile;
-    extern crate reqwest;
+    extern crate mio_httpc;
 
+    use self::mio_httpc::CallBuilder;
     use self::tempfile::tempdir;
     #[allow(unused_imports)]
     use super::*;
@@ -915,7 +916,8 @@ mod tests {
     #[test]
     fn real_world_gazetteer() {
 
-        let data: Vec<EntityValue> = reqwest::get("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().json().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer{ data };
 
         let parser = Parser::from_gazetteer(&gaz).unwrap();
@@ -942,7 +944,8 @@ mod tests {
             }]
         );
 
-        let data: Vec<EntityValue> = reqwest::get("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().json().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer{ data };
 
         let parser = Parser::from_gazetteer(&gaz).unwrap();

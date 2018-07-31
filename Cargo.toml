@@ -15,7 +15,7 @@ rmp-serde = "0.13.7"
 criterion = "0.2"
 rand = "0.5"
 tempfile = "3.0.2"
-reqwest = "0.8.6"
+mio_httpc = {version = "0.6", features = ["rtls"]}
 
 [[bench]]
 name = "bench_parser"
