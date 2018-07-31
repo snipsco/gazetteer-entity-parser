@@ -320,7 +320,14 @@ impl Parser {
         // the parser to come back to this state
         let restart_state = resolver_fst.add_state();
         resolver_fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, restart_state);
-        resolver_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, restart_state);
+        // We can also go back to the start state to match a new value without consuming a restart
+        // token. This is useful to match things like "I like to listen to the rollings stones,
+        // the beatles" without a transition word between the values. However, we weight this
+        // transition to promote matching the longest possible substring from the input.
+        // This weight should be at least two to compensate for the weight of skipping one token
+        // and any rank-induced differences of weights between the competing parsings.
+        // (see test_match_longest_substring for examples)
+        resolver_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 2.0, restart_state);
         for res_val in possible_resolved_values {
             let mut current_head = restart_state;
             let (rank, tokens) = self.resolved_value_to_tokens.get(&res_val).ok_or_else(|| format_err!("Error when building the pareser FST: could not find the resolved value {:?} in the possible_resolved_values hashmap", res_val))?;
@@ -425,6 +432,7 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     extern crate tempfile;
+    extern crate reqwest;
 
     use self::tempfile::tempdir;
     #[allow(unused_imports)]
@@ -432,36 +440,30 @@ mod tests {
     #[allow(unused_imports)]
     use data::EntityValue;
 
-    // #[test]
-    // #[ignore]
-    // fn test_seralization_deserialization() {
-    //     let tdir = tempdir().unwrap();
-    //     let mut gazetteer = Gazetteer::new();
-    //     gazetteer.add(EntityValue {
-    //         resolved_value: "The Flying Stones".to_string(),
-    //         raw_value: "the flying stones".to_string(),
-    //     });
-    //     gazetteer.add(EntityValue {
-    //         resolved_value: "The Rolling Stones".to_string(),
-    //         raw_value: "the rolling stones".to_string(),
-    //     });
-    //     let parser = Parser::from_gazetteer(&gazetteer).unwrap();
-    //     parser.dump(tdir.as_ref().join("parser")).unwrap();
-    //     let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
-    //     tdir.close().unwrap();
-    //
-    //     // compare resolved_value_to_tokens
-    //     assert!(parser.resolved_value_to_tokens == reloaded_parser.resolved_value_to_tokens);
-    //     // compare token_to_resolved_values
-    //     assert!(parser.token_to_resolved_values == reloaded_parser.token_to_resolved_values);
-    //     // Compare symbol tables
-    //     for (idx, _) in parser.token_to_resolved_values.clone() {
-    //         assert!(parser.symbol_table.find_index(idx).unwrap().unwrap() == reloaded_parser.symbol_table.find_index(idx).unwrap().unwrap())
-    //     }
-    //     for (idx, _) in parser.resolved_value_to_tokens.clone() {
-    //         assert!(parser.symbol_table.find_index(idx).unwrap().unwrap() == reloaded_parser.symbol_table.find_index(idx).unwrap().unwrap())
-    //     }
-    // }
+    #[test]
+    fn test_seralization_deserialization() {
+        let tdir = tempdir().unwrap();
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.dump(tdir.as_ref().join("parser")).unwrap();
+        let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
+        tdir.close().unwrap();
+
+        // compare resolved_value_to_tokens
+        assert!(parser.resolved_value_to_tokens == reloaded_parser.resolved_value_to_tokens);
+        // compare token_to_resolved_values
+        assert!(parser.token_to_resolved_values == reloaded_parser.token_to_resolved_values);
+        // Compare symbol tables
+        assert!(parser.symbol_table == reloaded_parser.symbol_table);
+    }
 
     #[test]
     fn test_parser_base() {
@@ -543,6 +545,62 @@ mod tests {
 
         parsed = parser.run("joue moi quelque chose", 0.0).unwrap();
         assert_eq!(parsed, vec![]);
+    }
+
+
+    #[test]
+    fn test_parser_multiple_raw_values() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink one eight two".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink 182".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let mut parsed = parser
+            .run("let's listen to blink 182", 0.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "blink 182".to_string(),
+                    resolved_value: "Blink-182".to_string(),
+                    range: 16..25,
+                }
+            ]
+        );
+
+        parsed = parser
+            .run("let's listen to blink", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "blink".to_string(),
+                    resolved_value: "Blink-182".to_string(),
+                    range: 16..21,
+                }
+            ]
+        );
+
+        parsed = parser
+            .run("let's listen to blink one two", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "blink one two".to_string(),
+                    resolved_value: "Blink-182".to_string(),
+                    range: 16..29,
+                }
+            ]
+        );
     }
 
     #[test]
@@ -787,14 +845,129 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn real_world_gazetteer() {
-        let gaz = Gazetteer::from_json("local_testing/artist_gazeteer_formatted.json", None).unwrap();
-        let parser = Parser::from_gazetteer(&gaz).unwrap();
-        parser.dump("./test_artist_parser").unwrap();
+    fn test_match_longest_substring() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "Black And White".to_string(),
+            raw_value: "black and white".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Album".to_string(),
+            raw_value: "album".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Black and White Album".to_string(),
+            raw_value: "the black and white album".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "1 2 3 4".to_string(),
+            raw_value: "one two three four".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "3 4 5 6".to_string(),
+            raw_value: "three four five six".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        let gaz2 = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
-        let parser2 = Parser::from_gazetteer(&gaz2).unwrap();
-        parser2.dump("./test_album_parser").unwrap();
+        let parsed = parser
+            .run("je veux écouter le black and white album", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "black and white album".to_string(),
+                resolved_value: "The Black and White Album".to_string(),
+                range: 19..40,
+            }]
+        );
+
+        let parsed = parser
+            .run("one two three four", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "one two three four".to_string(),
+                resolved_value: "1 2 3 4".to_string(),
+                range: 0..18,
+            }]
+        );
+
+        // This last test is ambiguous and there may be several acceptable answers...
+        let parsed = parser
+            .run("one two three four five six", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "one two".to_string(),
+                resolved_value: "1 2 3 4".to_string(),
+                range: 0..7,
+            },
+            ParsedValue {
+                raw_value: "three four five six".to_string(),
+                resolved_value: "3 4 5 6".to_string(),
+                range: 8..27,
+            }]
+        );
+
+    }
+
+    #[test]
+    fn real_world_gazetteer() {
+
+        let data: Vec<EntityValue> = reqwest::get("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().json().unwrap();
+        let gaz = Gazetteer{ data };
+
+        let parser = Parser::from_gazetteer(&gaz).unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 20..34,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter bowie", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "bowie".to_string(),
+                resolved_value: "David Bowie".to_string(),
+                range: 16..21,
+            }]
+        );
+
+        let data: Vec<EntityValue> = reqwest::get("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().json().unwrap();
+        let gaz = Gazetteer{ data };
+
+        let parser = Parser::from_gazetteer(&gaz).unwrap();
+        let parsed = parser
+            .run("je veux écouter le black and white album", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "black and white album".to_string(),
+                resolved_value: "The Black and White Album".to_string(),
+                range: 19..40,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter dark side of the moon", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "dark side of the moon".to_string(),
+                resolved_value: "Dark Side of the Moon".to_string(),
+                range: 16..37,
+            }]
+        );
     }
 }
