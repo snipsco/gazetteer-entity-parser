@@ -9,7 +9,6 @@ use failure::ResultExt;
 use serde_json;
 use snips_fst::string_paths_iterator::StringPath;
 use snips_fst::arc_iterator::ArcIterator;
-use snips_fst::symbol_table::SymbolTable;
 use symbol_table::GazetteerParserSymbolTable;
 use snips_fst::{fst, operations};
 use std::fs;
@@ -19,7 +18,7 @@ use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
 use serde::{Serialize};
 use rmps::{Serializer, from_read};
-use std::ptr;
+
 
 /// Struct representing the parser. The `symbol_table` attribute holds the symbol table used
 /// to create the parsing FSTs. The Parser will match the longest possible contiguous substrings
