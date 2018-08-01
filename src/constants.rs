@@ -12,3 +12,4 @@ pub const METADATA_FILENAME: &str = "metadata.json";
 pub const SYMBOLTABLE_FILENAME: &str = "symbol_table";
 pub const RESOLVED_VALUE_TO_TOKENS: &str = "resolved_value_to_tokens";
 pub const TOKEN_TO_RESOLVED_VALUES: &str = "token_to_resolved_values";
+pub const TOKEN_TO_COUNT: &str = "token_to_count";

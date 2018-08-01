@@ -32,6 +32,7 @@ use rmps::{Serializer, from_read};
 /// added first (see Gazetteer).
 pub struct Parser {
     symbol_table: GazetteerParserSymbolTable,
+    token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
     token_to_resolved_values: HashMap<u32, HashSet<u32>>,  // maps token to set of resolved values containing token
     resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>  // maps resolved value to a tuple (rank, tokens)
 }
@@ -41,7 +42,8 @@ struct ParserConfig {
     symbol_table_filename: String,
     version: String,
     token_to_resolved_values: String,
-    resolved_value_to_tokens: String
+    resolved_value_to_tokens: String,
+    token_to_count: String
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
@@ -75,7 +77,7 @@ impl Parser {
         if restart_idx != RESTART_IDX {
             return Err(format_err!("Wrong restart index: {}", restart_idx));
         }
-        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default() })
+        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default() })
     }
 
 
@@ -100,6 +102,11 @@ impl Parser {
                     h.insert(res_value_idx);
                     h
                 });
+
+            // Update token count
+            self.token_to_count.entry(token_idx)
+                .and_modify(|c| {*c += 1} )
+                .or_insert(1);
 
             // Update resolved_value_to_tokens map
             self.resolved_value_to_tokens.entry(res_value_idx)
@@ -437,7 +444,8 @@ impl Parser {
             symbol_table_filename: SYMBOLTABLE_FILENAME.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             resolved_value_to_tokens: RESOLVED_VALUE_TO_TOKENS.to_string(),
-            token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string()
+            token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string(),
+            token_to_count: TOKEN_TO_COUNT.to_string()
         }
     }
 
@@ -464,6 +472,10 @@ impl Parser {
         fs::File::create(folder_name.as_ref().join(config.resolved_value_to_tokens))?;
         self.resolved_value_to_tokens.serialize(&mut Serializer::new(&mut resolved_value_to_tokens_writer))?;
 
+        let mut token_to_count_writer =
+        fs::File::create(folder_name.as_ref().join(config.token_to_count))?;
+        self.token_to_count.serialize(&mut Serializer::new(&mut token_to_count_writer))?;
+
         Ok(())
     }
 
@@ -487,7 +499,12 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", res_val_to_tokens_path))?;
         let resolved_value_to_tokens = from_read(res_val_to_tokens_file)?;
 
-        Ok(Parser { symbol_table, token_to_resolved_values, resolved_value_to_tokens })
+        let token_to_count_path = folder_name.as_ref().join(config.token_to_count);
+        let token_to_count_file = fs::File::open(&token_to_count_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", token_to_count_path))?;
+        let token_to_count = from_read(token_to_count_file)?;
+
+        Ok(Parser { symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count })
     }
 }
 
@@ -526,6 +543,8 @@ mod tests {
         assert!(parser.token_to_resolved_values == reloaded_parser.token_to_resolved_values);
         // Compare symbol tables
         assert!(parser.symbol_table == reloaded_parser.symbol_table);
+        // Compare token counts
+        assert!(parser.token_to_count == reloaded_parser.token_to_count);
     }
 
     #[test]
