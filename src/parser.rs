@@ -34,7 +34,9 @@ pub struct Parser {
     symbol_table: GazetteerParserSymbolTable,
     token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
     token_to_resolved_values: HashMap<u32, HashSet<u32>>,  // maps token to set of resolved values containing token
-    resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>  // maps resolved value to a tuple (rank, tokens)
+    resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>,  // maps resolved value to a tuple (rank, tokens)
+    stop_words: HashSet<u32>,
+    edge_cases: HashSet<u32>  // values composed only of stop words
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,7 +45,9 @@ struct ParserConfig {
     version: String,
     token_to_resolved_values: String,
     resolved_value_to_tokens: String,
-    token_to_count: String
+    token_to_count: String,
+    stop_words: String,
+    edge_cases: String
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
@@ -77,9 +81,8 @@ impl Parser {
         if restart_idx != RESTART_IDX {
             return Err(format_err!("Wrong restart index: {}", restart_idx));
         }
-        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default() })
+        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default() })
     }
-
 
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
@@ -112,6 +115,29 @@ impl Parser {
             self.resolved_value_to_tokens.entry(res_value_idx)
             .and_modify(|(_, v)| v.push(token_idx))
             .or_insert((rank, vec![token_idx]));
+        }
+        Ok(())
+    }
+
+    /// Update an internal set of stop words, with frequency higher than threshold_freq in the
+    /// gazetteer, and corresponding set of edge cases, containing values only composed of stop
+    /// words
+    pub fn compute_stop_words(&mut self, threshold_freq: f32) -> GazetteerParserResult<()> {
+        // Update the set of stop words
+        let n_resolved_values = self.resolved_value_to_tokens.len() as f32;
+        for (token, count) in &self.token_to_count {
+            if *count as f32 / n_resolved_values as f32 > threshold_freq {
+                self.stop_words.insert(*token);
+            }
+        }
+        // Update the set of edge_cases. i.e. resolved value that only contain stop words
+        'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
+            for tok in tokens {
+                if !(self.stop_words.contains(tok)) {
+                    continue 'outer
+                }
+            }
+            self.edge_cases.insert(*res_val);
         }
         Ok(())
     }
@@ -445,7 +471,9 @@ impl Parser {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resolved_value_to_tokens: RESOLVED_VALUE_TO_TOKENS.to_string(),
             token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string(),
-            token_to_count: TOKEN_TO_COUNT.to_string()
+            token_to_count: TOKEN_TO_COUNT.to_string(),
+            stop_words: STOP_WORDS.to_string(),
+            edge_cases: EDGE_CASES.to_string()
         }
     }
 
@@ -476,6 +504,14 @@ impl Parser {
         fs::File::create(folder_name.as_ref().join(config.token_to_count))?;
         self.token_to_count.serialize(&mut Serializer::new(&mut token_to_count_writer))?;
 
+        let mut stop_words_writer =
+        fs::File::create(folder_name.as_ref().join(config.stop_words))?;
+        self.stop_words.serialize(&mut Serializer::new(&mut stop_words_writer))?;
+
+        let mut edge_cases_writer =
+        fs::File::create(folder_name.as_ref().join(config.edge_cases))?;
+        self.edge_cases.serialize(&mut Serializer::new(&mut edge_cases_writer))?;
+
         Ok(())
     }
 
@@ -504,7 +540,17 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", token_to_count_path))?;
         let token_to_count = from_read(token_to_count_file)?;
 
-        Ok(Parser { symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count })
+        let stop_words_path = folder_name.as_ref().join(config.stop_words);
+        let stop_words_file = fs::File::open(&stop_words_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", stop_words_path))?;
+        let stop_words = from_read(stop_words_file)?;
+
+        let edge_cases_path = folder_name.as_ref().join(config.edge_cases);
+        let edge_cases_file = fs::File::open(&edge_cases_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
+        let edge_cases = from_read(edge_cases_file)?;
+
+        Ok(Parser { symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases })
     }
 }
 
@@ -532,7 +578,13 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.compute_stop_words(0.51);
+
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
@@ -545,6 +597,36 @@ mod tests {
         assert!(parser.symbol_table == reloaded_parser.symbol_table);
         // Compare token counts
         assert!(parser.token_to_count == reloaded_parser.token_to_count);
+        // Compare stop words
+        assert!(parser.stop_words == reloaded_parser.stop_words);
+        // Compare edge cases
+        assert!(parser.edge_cases == reloaded_parser.edge_cases);
+    }
+
+    #[test]
+    fn test_stop_words_and_edge_cases() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.compute_stop_words(0.51);
+        let mut gt_stop_words: HashSet<u32> = HashSet::default();
+        gt_stop_words.insert(parser.symbol_table.find_single_symbol("the").unwrap().unwrap());
+        gt_stop_words.insert(parser.symbol_table.find_single_symbol("stones").unwrap().unwrap());
+        assert!(parser.stop_words == gt_stop_words);
+        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
+        gt_edge_cases.insert(parser.symbol_table.find_single_symbol(&fst_format_resolved_value("The Stones")).unwrap().unwrap());
+        assert!(parser.edge_cases == gt_edge_cases);
     }
 
     #[test]
