@@ -1,5 +1,9 @@
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+// use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+// use fnv::FnvHashMap as HashMap;
+// use fnv::FnvHashSet as HashSet;
 use constants::RESTART_IDX;
 use constants::*;
 use data::EntityValue;
@@ -19,6 +23,7 @@ use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_va
 use serde::{Serialize};
 use rmps::{Serializer, from_read};
 
+// type HashMap<K, V> = std::collections::HashMap<K, V, FnvHasher>;
 
 /// Struct representing the parser. The `symbol_table` attribute holds the symbol table used
 /// to create the parsing FSTs. The Parser will match the longest possible contiguous substrings
@@ -27,8 +32,8 @@ use rmps::{Serializer, from_read};
 /// added first (see Gazetteer).
 pub struct Parser {
     symbol_table: GazetteerParserSymbolTable,
-    token_to_resolved_values: HashMap<i32, HashSet<i32>>,  // maps token to set of resolved values containing token
-    resolved_value_to_tokens: HashMap<i32, (i32, Vec<i32>)>  // maps resolved value to a tuple (rank, tokens)
+    token_to_resolved_values: HashMap<u32, HashSet<u32>>,  // maps token to set of resolved values containing token
+    resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>  // maps resolved value to a tuple (rank, tokens)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,14 +75,14 @@ impl Parser {
         if restart_idx != RESTART_IDX {
             return Err(format_err!("Wrong restart index: {}", restart_idx));
         }
-        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::new(), resolved_value_to_tokens: HashMap::new() })
+        Ok(Parser { symbol_table, token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default() })
     }
 
 
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &EntityValue, rank: i32) -> GazetteerParserResult<()> {
+    fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
         let res_value_idx = self.symbol_table.add_symbol(&fst_format_resolved_value(&entity_value.resolved_value), true)?;
@@ -91,7 +96,7 @@ impl Parser {
             self.token_to_resolved_values.entry(token_idx)
                 .and_modify(|e| {e.insert(res_value_idx);})
                 .or_insert( {
-                    let mut h = HashSet::new();
+                    let mut h = HashSet::default();
                     h.insert(res_value_idx);
                     h
                 });
@@ -110,51 +115,105 @@ impl Parser {
     pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
         let mut parser = Parser::new()?;
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            parser.add_value(entity_value, rank as i32)?;
+            parser.add_value(entity_value, rank as u32)?;
         }
         Ok(parser)
     }
 
-    /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
-    /// of the tokens composing it, as well as a set of possible resolution based on the tokens
-    /// found in the sentence. This set is used to build the smallest possible parser fst in a
-    /// subsequent step.
-    fn build_input_fst(&self, input: &str, decoding_threshold: f32) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>, HashSet<i32>)> {
-        // build the input fst
-        let mut input_fst = fst::Fst::new();
-        let mut tokens_ranges: Vec<Range<usize>> = vec![];
-        let mut current_head = input_fst.add_state();
-        let mut possible_resolved_values: HashSet<i32> = HashSet::new();
-        let mut possible_resolved_values_counts: HashMap<i32, (i32, i32)> = HashMap::new();
-        let mut admissible_tokens: HashSet<i32> = HashSet::new();
-        input_fst.set_start(current_head);
-        let mut restart_to_be_inserted: bool = false;
 
-        // We do a first pass to check what the possible resolved values are
-        // (taking threshold into account)
+    /// get the admissible tokens
+    // fn filter_possible_resolutions(possible_resolved_values_counts: &HashSet<i32>, decoding_threshold: f32) -> GazetteerParserResult<HashSet<i32>
+
+    /// get resolved value (DEBUG)
+    // #[inline(never)]
+    fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> GazetteerParserResult<&(u32, Vec<u32>)> {
+        Ok(self.resolved_value_to_tokens.get(resolved_value).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", resolved_value))?)
+    }
+
+    /// get resolved values from token
+    // #[inline(never)]
+    fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>> {
+        Ok(self.token_to_resolved_values.get(token).ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
+    }
+
+    /// get number of raw tokens corresponding to a resolved value
+    // #[inline(never)]
+    fn get_n_tokens(&self, resolved_value: &u32) -> GazetteerParserResult<usize> {
+        let (_, tokens) = self.get_tokens_from_resolved_value(resolved_value)?;
+        Ok(tokens.len())
+    }
+
+    /// Get counts of tokens for the possible resolutions
+    // #[inline(never)]
+    fn get_resolutions_counts(&self, input: &str) -> GazetteerParserResult<HashMap<u32, (u32, u32)>> {
+        let mut possible_resolved_values_counts: HashMap<u32, (u32, u32)> = HashMap::default();
+        let mut skipped_tokens: HashSet<u32> = HashSet::default();
         for (_, token) in whitespace_tokenizer(input) {
             // single tokens should only appear once in the symbol table
             match self.symbol_table.find_single_symbol(&token)? {
                 Some(value) => {
-                    for res_value in self.token_to_resolved_values.get(&value).ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", value))? {
+                    let resolved_values = self.get_resolved_values_from_token(&value)?;
+                    // if resolved_values.len() > 1000 {
+                    //     skipped_tokens.insert(value);
+                    //     continue
+                    // }
+                    for res_value in resolved_values {
                         possible_resolved_values_counts.entry(*res_value)
                         .and_modify(|(_, count)| *count += 1)
-                        .or_insert((self.resolved_value_to_tokens.get(&res_value).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", res_value))?.1.len() as i32, 1));
+                        .or_insert((self.get_n_tokens(res_value)? as u32, 1));
                     }
                 }
                 None => continue
             };
         }
+    // add back the counts for the tokens that we skipped
+    for token in skipped_tokens {
+        let resolved_values = self.get_resolved_values_from_token(&token)?;
+        for res_value in resolved_values {
+            possible_resolved_values_counts.entry(*res_value)
+            .and_modify(|(_, count)| *count += 1);
+        }
+    }
+    Ok(possible_resolved_values_counts)
+    }
+
+
+    /// We do a first pass on the input to check what the possible resolved values are
+    /// (taking threshold into account)
+    // #[inline(never)]
+    fn get_possible_resolutions(&self, input: &str, decoding_threshold: f32) -> GazetteerParserResult<(HashSet<u32>, HashSet<u32>)> {
+        let mut possible_resolved_values: HashSet<u32> = HashSet::default();
+        let mut admissible_tokens: HashSet<u32> = HashSet::default();
+
+        let possible_resolved_values_counts = self.get_resolutions_counts(input)?;
 
         // From the counts, we extract the possible resolved values
         for (res_val, (len, count)) in &possible_resolved_values_counts {
-            if check_threshold(*count, max(0, len - count), decoding_threshold) {
-                possible_resolved_values.insert(res_val.clone());
+            if check_threshold(*count, max(0, *len as i32 - *count as i32) as u32, decoding_threshold) {
+                possible_resolved_values.insert(*res_val);
                 for tok in &self.resolved_value_to_tokens.get(&res_val).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", res_val))?.1 {
                     admissible_tokens.insert(*tok);
                 }
             }
         }
+        Ok((possible_resolved_values, admissible_tokens))
+    }
+
+
+    /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
+    /// of the tokens composing it, as well as a set of possible resolution based on the tokens
+    /// found in the sentence. This set is used to build the smallest possible parser fst in a
+    /// subsequent step.
+    // #[inline(never)]
+    fn build_input_fst(&self, input: &str, decoding_threshold: f32) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>, HashSet<u32>)> {
+        // build the input fst
+        let mut input_fst = fst::Fst::new();
+        let mut tokens_ranges: Vec<Range<usize>> = vec![];
+        let mut current_head = input_fst.add_state();
+        input_fst.set_start(current_head);
+        let mut restart_to_be_inserted: bool = false;
+
+        let (possible_resolved_values, admissible_tokens) = self.get_possible_resolutions(input, decoding_threshold)?;
 
         // Then we actually create the input FST
         for (token_range, token) in whitespace_tokenizer(input) {
@@ -162,13 +221,13 @@ impl Parser {
                 Some(value) => {
                     if restart_to_be_inserted {
                         let next_head = input_fst.add_state();
-                        input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
+                        input_fst.add_arc(current_head, EPS_IDX as i32, RESTART_IDX as i32, 0.0, next_head);
                         current_head = next_head;
                         restart_to_be_inserted = false;
                     }
                     if admissible_tokens.contains(&value) {
                         let next_head = input_fst.add_state();
-                        input_fst.add_arc(current_head, value, value, 0.0, next_head);
+                        input_fst.add_arc(current_head, value as i32, value as i32, 0.0, next_head);
                         tokens_ranges.push(token_range);
                         current_head = next_head;
                     } else {
@@ -206,11 +265,13 @@ impl Parser {
                 if num_arcs > 1 {
                     bail!("Shortest path fst is not linear")
                 }
-                if arc.ilabel() != EPS_IDX {
-                    input_tokens.push(self.symbol_table.find_index(arc.ilabel())?);
+                let ilabel = arc.ilabel() as u32;
+                if ilabel != EPS_IDX {
+                    input_tokens.push(self.symbol_table.find_index(ilabel)?);
                 }
-                if arc.olabel() != EPS_IDX {
-                    output_tokens.push(self.symbol_table.find_index(arc.olabel())?);
+                let olabel = arc.olabel() as u32;
+                if olabel != EPS_IDX {
+                    output_tokens.push(self.symbol_table.find_index(olabel)?);
                 }
                 weight += arc.weight();
                 next_head = arc.nextstate();
@@ -234,6 +295,7 @@ impl Parser {
 
 
     /// Format the shortest path as a vec of ParsedValue
+    // #[inline(never)]
     fn format_string_path(
         &self,
         string_path: &StringPath,
@@ -302,7 +364,7 @@ impl Parser {
     /// a token in the parsing is set to 1.0, this condition ensures that the parsed value is
     /// always the one corresponding to the longest match in the input string, regardless of the
     /// rank, which is only here to break ties.
-    fn compute_resolved_value_weight(rank: i32) -> GazetteerParserResult<f32> {
+    fn compute_resolved_value_weight(rank: u32) -> GazetteerParserResult<f32> {
         Ok(1.0 - 1.0 / (1.0 + rank as f32)) // Adding 1 ensures 1 + rank is > 0
     }
 
@@ -310,7 +372,8 @@ impl Parser {
     /// outputs the parsed value with the longest match in the input string. In case of a tie,
     /// the parsed value is the one with the smallest rank in the gazetteer used to build the
     /// parser.
-    fn build_parser_fst(&self, possible_resolved_values: HashSet<i32>) -> GazetteerParserResult<fst::Fst> {
+    // #[inline(never)]
+    fn build_parser_fst(&self, possible_resolved_values: HashSet<u32>) -> GazetteerParserResult<fst::Fst> {
         let mut resolver_fst = fst::Fst::new();
         // add a start state
         let start_state = resolver_fst.add_state();
@@ -318,7 +381,7 @@ impl Parser {
         // add a restart state. When the input fst contains a RESTART symbol, we force
         // the parser to come back to this state
         let restart_state = resolver_fst.add_state();
-        resolver_fst.add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, restart_state);
+        resolver_fst.add_arc(start_state, RESTART_IDX as i32, EPS_IDX as i32, 0.0, restart_state);
         // We can also go back to the start state to match a new value without consuming a restart
         // token. This is useful to match things like "I like to listen to the rollings stones,
         // the beatles" without a transition word between the values. However, we weight this
@@ -326,18 +389,18 @@ impl Parser {
         // This weight should be at least two to compensate for the weight of skipping one token
         // and any rank-induced differences of weights between the competing parsings.
         // (see test_match_longest_substring for examples)
-        resolver_fst.add_arc(start_state, EPS_IDX, EPS_IDX, 2.0, restart_state);
+        resolver_fst.add_arc(start_state, EPS_IDX as i32, EPS_IDX as i32, 2.0, restart_state);
         for res_val in possible_resolved_values {
             let mut current_head = restart_state;
             let (rank, tokens) = self.resolved_value_to_tokens.get(&res_val).ok_or_else(|| format_err!("Error when building the pareser FST: could not find the resolved value {:?} in the possible_resolved_values hashmap", res_val))?;
             for tok in tokens {
                 let next_head = resolver_fst.add_state();
-                resolver_fst.add_arc(current_head, *tok, CONSUMED_IDX, 0.0, next_head);
-                resolver_fst.add_arc(current_head, EPS_IDX, SKIP_IDX, 1.0, next_head);
+                resolver_fst.add_arc(current_head, *tok as i32, CONSUMED_IDX as i32, 0.0, next_head);
+                resolver_fst.add_arc(current_head, EPS_IDX as i32, SKIP_IDX as i32, 1.0, next_head);
                 current_head = next_head;
             }
             let final_head = resolver_fst.add_state();
-            resolver_fst.add_arc(current_head, EPS_IDX, res_val, 0.0, final_head);
+            resolver_fst.add_arc(current_head, EPS_IDX as i32, res_val as i32, 0.0, final_head);
             // we set the weight of the final state using the rank information
             resolver_fst.set_final(final_head, Self::compute_resolved_value_weight(*rank)?);
         }

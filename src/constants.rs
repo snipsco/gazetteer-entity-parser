@@ -1,11 +1,11 @@
 pub const EPS: &str = "<eps>";
-pub const EPS_IDX: i32 = 0;
+pub const EPS_IDX: u32 = 0;
 pub const SKIP: &str = "<skip>";
-pub const SKIP_IDX: i32 = 1;
+pub const SKIP_IDX: u32 = 1;
 pub const CONSUMED: &str = "<consumed>";
-pub const CONSUMED_IDX: i32 = 2;
+pub const CONSUMED_IDX: u32 = 2;
 pub const RESTART: &str = "<restart>";
-pub const RESTART_IDX: i32 = 3;
+pub const RESTART_IDX: u32 = 3;
 pub const RESOLVED_SYMBOL: &str = "__RESOLVED__";
 pub const SPACE_SYMBOL: &str = "__SPACE__";
 pub const METADATA_FILENAME: &str = "metadata.json";
