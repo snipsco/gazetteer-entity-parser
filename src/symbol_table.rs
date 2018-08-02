@@ -68,7 +68,8 @@ impl GazetteerParserSymbolTable {
     /// Find the unique symbol corresponding to an index in the symbol table
     // #[inline(never)]
     pub fn find_index(&self, idx: u32) -> GazetteerParserResult<String> {
-        Ok(self.index_to_string.get(idx as usize).ok_or_else(|| format_err!("Could not find index {:?} in the symbol table", idx))?.clone())
+        let symb = self.index_to_string.get(idx as usize).ok_or_else(|| format_err!("Could not find index {:?} in the symbol table", idx))?;
+        Ok(symb.to_string())
     }
 
     /// The only part of the symbol table that is serialized is the index_to_string vec.

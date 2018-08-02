@@ -142,6 +142,19 @@ impl Parser {
         Ok(())
     }
 
+    /// Get the set of stop words
+    pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>> {
+        self.stop_words.iter().map(|idx| self.symbol_table.find_index(*idx)).collect()
+    }
+
+    /// Get the set of edge cases, containing only stop words
+    pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>> {
+        Ok(self.edge_cases.iter().map(|idx| {
+            let symbol: String = self.symbol_table.find_index(*idx).unwrap();
+            fst_unformat_resolved_value(&symbol)
+        }).collect())
+    }
+
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
     /// This function adds the entity values from the gazetteer. This is the recommended method
     /// to define a parser.
@@ -158,62 +171,167 @@ impl Parser {
     // fn filter_possible_resolutions(possible_resolved_values_counts: &HashSet<i32>, decoding_threshold: f32) -> GazetteerParserResult<HashSet<i32>
 
     /// get resolved value (DEBUG)
-    // #[inline(never)]
+    #[inline(never)]
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> GazetteerParserResult<&(u32, Vec<u32>)> {
         Ok(self.resolved_value_to_tokens.get(resolved_value).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", resolved_value))?)
     }
 
     /// get resolved values from token
-    // #[inline(never)]
+    #[inline(never)]
     fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>> {
         Ok(self.token_to_resolved_values.get(token).ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
     }
 
     /// get number of raw tokens corresponding to a resolved value
-    // #[inline(never)]
+    #[inline(never)]
     fn get_n_tokens(&self, resolved_value: &u32) -> GazetteerParserResult<usize> {
         let (_, tokens) = self.get_tokens_from_resolved_value(resolved_value)?;
         Ok(tokens.len())
     }
 
     /// Get counts of tokens for the possible resolutions
-    // #[inline(never)]
+    #[inline(never)]
     fn get_resolutions_counts(&self, input: &str) -> GazetteerParserResult<HashMap<u32, (u32, u32)>> {
         let mut possible_resolved_values_counts: HashMap<u32, (u32, u32)> = HashMap::default();
+        // let mut possible_edge_values: HashSet<u32> = self.edge_cases;
         let mut skipped_tokens: HashSet<u32> = HashSet::default();
+        let mut rarest_skipped_token: u32 = 0;  // Used to filter the possible edge cases
+        let mut n_res_val_with_rarest_skipped_token: u32 = self.resolved_value_to_tokens.len() as u32;  // Used to filter the possible edge cases
         for (_, token) in whitespace_tokenizer(input) {
             // single tokens should only appear once in the symbol table
+            // DEBUG
+            // println!("TOKEN: {:?}", token);
+            // println!("STOP WORDS: {:?}", self.stop_words);
             match self.symbol_table.find_single_symbol(&token)? {
                 Some(value) => {
-                    let resolved_values = self.get_resolved_values_from_token(&value)?;
-                    // if resolved_values.len() > 1000 {
-                    //     skipped_tokens.insert(value);
-                    //     continue
-                    // }
-                    for res_value in resolved_values {
-                        possible_resolved_values_counts.entry(*res_value)
-                        .and_modify(|(_, count)| *count += 1)
-                        .or_insert((self.get_n_tokens(res_value)? as u32, 1));
+
+                    if self.stop_words.contains(&value) {
+                        // Stop word: we add only the resolved values from the edge case list
+                        // which contain all of the stop words so far
+                        // if skipped_tokens.is_empty() {
+                        //     possible_edge_values = self.get_resolved_values_from_token(&value)?.intersection(&self.edge_cases)
+                        // }
+                        skipped_tokens.insert(value);
+                        let n_res_val = self.get_resolved_values_from_token(&value)?.len() as u32;
+                        if n_res_val < n_res_val_with_rarest_skipped_token {
+                            n_res_val_with_rarest_skipped_token = n_res_val;
+                            rarest_skipped_token = value;
+                        }
+                        // let
+                        // let new_possible_edge_values: HashSet<u32> = HashSet::default();
+                        // for val in possible_edge_values {
+                        //     if
+                        // }
+                        //
+                        // for res_val in self.get_resolved_values_from_token(&value)? {
+                        //     possible_edge_values.
+                        // }
+                        // possible_edge_values.intersection(self.get_resolved_values_from_token(&value)?);
+                        // skipped_tokens.insert(value);
+                        // for res_value in self.get_resolved_values_from_token(&value)?.intersection(&self.edge_cases) {
+                        //     possible_resolved_values_counts.entry(*res_value)
+                        //     .and_modify(|(_, count)| *count += 1)
+                        //     .or_insert((self.get_n_tokens(res_value)? as u32, 1));
+                        // }
+                    } else {
+                        // Not a stop word: we consider all possible resolved values containing
+                        // the token
+                        for res_value in self.get_resolved_values_from_token(&value)? {
+                            possible_resolved_values_counts.entry(*res_value)
+                            .and_modify(|(_, count)| *count += 1)
+                            .or_insert((self.get_n_tokens(res_value)? as u32, 1));
+                        }
                     }
                 }
                 None => continue
             };
         }
-    // add back the counts for the tokens that we skipped
-    for token in skipped_tokens {
-        let resolved_values = self.get_resolved_values_from_token(&token)?;
-        for res_value in resolved_values {
-            possible_resolved_values_counts.entry(*res_value)
-            .and_modify(|(_, count)| *count += 1);
+
+        // DEBUG
+        // println!("SKIPPED TOKENS: {:?}", skipped_tokens);
+
+        // add back the counts for the tokens that we skipped, for the values that are not edge
+        // cases
+        for val in possible_resolved_values_counts.clone().keys() {
+            let (_, tokens) = self.get_tokens_from_resolved_value(&val)?;
+            for tok in tokens {
+                if skipped_tokens.contains(&tok) {
+                    possible_resolved_values_counts.entry(*val)
+                        .and_modify(|(_, count)| *count += 1);
+                }
+            }
         }
-    }
-    Ok(possible_resolved_values_counts)
+
+        // for token in &skipped_tokens {
+        //     let resolved_values = self.get_resolved_values_from_token(&token)?;
+        //     for res_value in resolved_values {
+        //         if !(self.edge_cases.contains(res_value)) {
+        //             possible_resolved_values_counts.entry(*res_value)
+        //             .and_modify(|(_, count)| *count += 1);
+        //         }
+        //     }
+        // }
+
+        // Finally, add the admissible edge cases, i.e those such as all their tokens are included
+        // in the skipped tokens.
+        // We gain some time by restricting to the values containing the rarest skipped token we
+        // found
+        // let mut ordered_skipped_tokens = skipped_tokens.iter().map(|tok| (*tok, self.get_resolved_values_from_token(tok).unwrap().len())).collect::<Vec<(u32, usize)>>();
+        // ordered_skipped_tokens.sort_by_key(|k| k.1);
+        // DEBUG
+        // println!("ORDERED SKIPPED TOKENS {:?}", ordered_skipped_tokens);
+        // let mut edge_case_values_to_add: HashSet<u32> = HashSet::default();
+
+        // DEBUG
+        // println!("SKIPPED TOKENS {:?}", skipped_tokens);
+        // println!("RAREST SKIPPED TOKEN {:?}", self.symbol_table.find_index(rarest_skipped_token));
+        // 'outer: for val in self.get_resolved_values_from_token(&rarest_skipped_token)? {
+        //     let (_, tokens) = self.get_tokens_from_resolved_value(val)?;
+        //     for tok in tokens {
+        //         if !skipped_tokens.contains(tok) {
+        //             continue 'outer
+        //         }
+        //     }
+        //     // // DEBUG
+        //     println!("ADDING POSSIBLE RESOLVED VALUE {:?}", self.symbol_table.find_index(*val));
+        //     possible_resolved_values_counts.entry(*val)
+        //         .or_insert((tokens.len() as u32, tokens.len() as u32));
+        // }
+
+        // possible_resolved_values_counts.entry(100)
+        //     .or_insert((1 as u32, 1 as u32));
+        // possible_resolved_values_counts.entry(101)
+        //     .or_insert((1 as u32, 1 as u32));
+
+
+        // for (idx, (tok, _)) in ordered_skipped_tokens.iter().enumerate() {
+        //     if idx == 0 {
+        //         // Our starting point is the set of resolved values which contain the rarest stop
+        //         // word, and whose tokens are included in the skipped tokens
+        //         edge_case_values_to_add = self.get_resolved_values_from_token(&tok)?.clone();
+        //     } else {
+        //         let mut new_edge_case_values_to_add: HashSet<u32> = HashSet::default();
+        //         for val in edge_case_values_to_add.intersection(self.get_resolved_values_from_token(&tok)?) {
+        //             new_edge_case_values_to_add.insert(*val);
+        //         }
+        //         edge_case_values_to_add = new_edge_case_values_to_add;
+        //     }
+        // }
+        // for val in edge_case_values_to_add {
+        //     let (_, tokens) = self.get_tokens_from_resolved_value(&val)?;
+        //     possible_resolved_values_counts.entry(val)
+        //         .or_insert((tokens.len() as u32, tokens.len() as u32));
+        // }
+
+        // DEBUG
+        // println!("NUM POSSIBLE VALUES BEFORE THRESHOLD {:?}", possible_resolved_values_counts.len());
+        Ok(possible_resolved_values_counts)
     }
 
 
     /// We do a first pass on the input to check what the possible resolved values are
     /// (taking threshold into account)
-    // #[inline(never)]
+    #[inline(never)]
     fn get_possible_resolutions(&self, input: &str, decoding_threshold: f32) -> GazetteerParserResult<(HashSet<u32>, HashSet<u32>)> {
         let mut possible_resolved_values: HashSet<u32> = HashSet::default();
         let mut admissible_tokens: HashSet<u32> = HashSet::default();
@@ -237,7 +355,7 @@ impl Parser {
     /// of the tokens composing it, as well as a set of possible resolution based on the tokens
     /// found in the sentence. This set is used to build the smallest possible parser fst in a
     /// subsequent step.
-    // #[inline(never)]
+    #[inline(never)]
     fn build_input_fst(&self, input: &str, decoding_threshold: f32) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>, HashSet<u32>)> {
         // build the input fst
         let mut input_fst = fst::Fst::new();
@@ -328,7 +446,7 @@ impl Parser {
 
 
     /// Format the shortest path as a vec of ParsedValue
-    // #[inline(never)]
+    #[inline(never)]
     fn format_string_path(
         &self,
         string_path: &StringPath,
@@ -405,7 +523,7 @@ impl Parser {
     /// outputs the parsed value with the longest match in the input string. In case of a tie,
     /// the parsed value is the one with the smallest rank in the gazetteer used to build the
     /// parser.
-    // #[inline(never)]
+    #[inline(never)]
     fn build_parser_fst(&self, possible_resolved_values: HashSet<u32>) -> GazetteerParserResult<fst::Fst> {
         let mut resolver_fst = fst::Fst::new();
         // add a start state
@@ -437,9 +555,27 @@ impl Parser {
             // we set the weight of the final state using the rank information
             resolver_fst.set_final(final_head, Self::compute_resolved_value_weight(*rank)?);
         }
+
+        // Add the edge cases without eps skips
+        for res_val in &self.edge_cases {
+            let mut current_head = restart_state;
+            let (rank, tokens) = self.resolved_value_to_tokens.get(&res_val).ok_or_else(|| format_err!("Error when building the pareser FST: could not find the resolved value {:?} in the possible_resolved_values hashmap", res_val))?;
+            for tok in tokens {
+                let next_head = resolver_fst.add_state();
+                resolver_fst.add_arc(current_head, *tok as i32, CONSUMED_IDX as i32, 0.0, next_head);
+                current_head = next_head;
+            }
+            let final_head = resolver_fst.add_state();
+            resolver_fst.add_arc(current_head, EPS_IDX as i32, *res_val as i32, 0.0, final_head);
+            // we set the weight of the final state using the rank information
+            resolver_fst.set_final(final_head, Self::compute_resolved_value_weight(*rank)?);
+        }
+
         // We do not optimize the fst (this actually saves some time)
         // We take the closure of the parser fst to allow parsing several values in the same
         // input sentence
+        // DEBUG
+        // resolver_fst.optimize();
         resolver_fst.closure_plus();
         resolver_fst.arc_sort(true);
         Ok(resolver_fst)
@@ -1080,11 +1216,19 @@ mod tests {
     #[test]
     fn real_world_gazetteer() {
 
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        let gaz = Gazetteer{ data };
+        // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        // let gaz = Gazetteer{ data };
+        // DEBUG
+        let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
 
-        let parser = Parser::from_gazetteer(&gaz).unwrap();
+        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+        let fraction = 0.005;
+        parser.compute_stop_words(fraction);
+        println!("FRACTION {:?}", fraction);
+        println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
+        println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
+
         let parsed = parser
             .run("je veux écouter les rolling stones", 0.6)
             .unwrap();
@@ -1108,11 +1252,19 @@ mod tests {
             }]
         );
 
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        let gaz = Gazetteer{ data };
+        // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        // let gaz = Gazetteer{ data };
+        // DEBUG
+        let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
 
-        let parser = Parser::from_gazetteer(&gaz).unwrap();
+        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+        let fraction = 0.01;
+        parser.compute_stop_words(fraction);
+        println!("FRACTION {:?}", fraction);
+        println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
+        println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
+
         let parsed = parser
             .run("je veux écouter le black and white album", 0.6)
             .unwrap();
