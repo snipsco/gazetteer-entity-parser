@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
 use std::cmp::max;
 // use std::collections::{HashMap, HashSet};
+use std::collections::BinaryHeap;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 // use fnv::FnvHashMap as HashMap;
@@ -22,6 +24,7 @@ use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
 use serde::{Serialize};
 use rmps::{Serializer, from_read};
+use lcs::LcsTable;
 
 // type HashMap<K, V> = std::collections::HashMap<K, V, FnvHasher>;
 
@@ -49,6 +52,44 @@ struct ParserConfig {
     stop_words: String,
     edge_cases: String
 }
+
+/// Struct holding a possible match that can be grown by iterating over the input tokens
+#[derive(Debug, PartialEq, Eq)]
+struct PossibleMatch {
+    resolved_value: u32,
+    range: Range<usize>,
+    n_skipped_tokens: u32,
+    n_consumed_tokens: u32,
+    last_token_in_input: usize,
+    last_token_in_resolution: usize,
+    rank: u32
+}
+
+impl Ord for PossibleMatch {
+    fn cmp(&self, other: &PossibleMatch) -> Ordering {
+        if self.n_consumed_tokens < other.n_consumed_tokens {
+            Ordering::Less
+        } else if self.n_consumed_tokens < other.n_consumed_tokens {
+            other.rank.cmp(&self.rank)
+        } else {
+            Ordering::Greater
+        }
+    }
+}
+
+impl PartialOrd for PossibleMatch {
+    fn partial_cmp(&self, other: &PossibleMatch) -> Option<Ordering> {
+        if self.n_consumed_tokens < other.n_consumed_tokens {
+            Some(Ordering::Less)
+        } else if self.n_consumed_tokens < other.n_consumed_tokens {
+            other.rank.partial_cmp(&self.rank)
+        } else {
+            Some(Ordering::Greater)
+        }
+    }
+}
+
+
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
 /// will be a vector of ParsedValue. The `range` attribute is the range of the characters
@@ -187,6 +228,84 @@ impl Parser {
     fn get_n_tokens(&self, resolved_value: &u32) -> GazetteerParserResult<usize> {
         let (_, tokens) = self.get_tokens_from_resolved_value(resolved_value)?;
         Ok(tokens.len())
+    }
+
+    /// Find all possible matches in a string.
+    /// Returns a hashmap, indexed by resvolved values. The corresponding value is a vec of tuples
+    /// each tuple is a possible match for the resvoled value, and is made of
+    // (range of match, number of skips, index of last matched token in the resolved value)
+    fn find_possible_matches(&self, input: &str) -> GazetteerParserResult<HashMap<u32, Vec<PossibleMatch>>> {
+        let mut possible_matches: HashMap<u32, Vec<PossibleMatch>> = HashMap::default();
+        let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
+        for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
+            let range_start = range.start;
+            let range_end = range.end;
+            match self.symbol_table.find_single_symbol(&token)? {
+                Some(value) => {
+                    for res_val in self.get_resolved_values_from_token(&value)? {
+                        possible_matches.entry(*res_val)
+                            .and_modify(|possible_match| {
+                                {
+                                    let last_match = possible_match.last_mut().unwrap();  // The vec cannot be empty
+                                    if last_match.resolved_value == *res_val && token_idx == last_match.last_token_in_input + 1 {
+                                        // Grow the last Possible Match
+                                        // Find the next token in the resolved value that matches the
+                                        // input token
+                                        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+                                        let mut n_skips = 0;
+                                        for otoken_idx in last_match.last_token_in_resolution..otokens.len() {
+                                            let otok = otokens[otoken_idx];
+                                            if value == otok {
+                                                last_match.range.end = range_end;
+                                                last_match.n_consumed_tokens += 1;
+                                                last_match.n_skipped_tokens += n_skips;
+                                                last_match.last_token_in_input = token_idx;
+                                                last_match.last_token_in_resolution = otoken_idx;
+                                                return
+                                            } else {
+                                                n_skips += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                // the token belongs to a new resolved value, or the previous
+                                // PossibleMatch cannot be grown further. We start a new
+                                // PossibleMatch
+                                let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+                                let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| format_err!("Tokens list should contain value but doesn't")).unwrap();
+                                possible_match.push(
+                                    PossibleMatch {
+                                        resolved_value: *res_val,
+                                        range: range_start..range_end,
+                                        n_skipped_tokens: 0,
+                                        last_token_in_input: token_idx,
+                                        last_token_in_resolution,
+                                        n_consumed_tokens: 1,
+                                        rank: *rank
+                                    }
+                                );
+                        })
+                        // TODO: factorize this piece of code
+                        .or_insert({
+                            let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+                            let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| format_err!("Tokens list should contain value but doesn't")).unwrap();
+                            vec![
+                                PossibleMatch {
+                                    resolved_value: *res_val,
+                                    range: range_start..range_end,
+                                    n_skipped_tokens: 0,
+                                    last_token_in_input: token_idx,
+                                    last_token_in_resolution,
+                                    n_consumed_tokens: 1,
+                                    rank: *rank
+                                }]
+                        });
+                    }
+                },
+                None => continue
+            }
+        }
+        Ok(possible_matches)
     }
 
     /// Get counts of tokens for the possible resolutions
@@ -365,7 +484,9 @@ impl Parser {
         let mut restart_to_be_inserted: bool = false;
 
         let (possible_resolved_values, admissible_tokens) = self.get_possible_resolutions(input, decoding_threshold)?;
-
+        // for tok in &admissible_tokens {
+        //     println!("ADMISSIBLE TOKEN {:?}", self.symbol_table.find_index(*tok));
+        // }
         // Then we actually create the input FST
         for (token_range, token) in whitespace_tokenizer(input) {
             match self.symbol_table.find_single_symbol(&token)? {
@@ -398,6 +519,10 @@ impl Parser {
         input_fst.arc_sort(false);
         Ok((input_fst, tokens_ranges, possible_resolved_values))
     }
+
+    // // DEBUG
+    // // Experiment with lcs search
+    // fn get_lcs(&self, )
 
     /// Return the one shortest path as a StringPath
     fn get_1_shortest_path(&self, fst: &fst::Fst,) -> GazetteerParserResult<StringPath> {
@@ -524,7 +649,7 @@ impl Parser {
     /// the parsed value is the one with the smallest rank in the gazetteer used to build the
     /// parser.
     #[inline(never)]
-    fn build_parser_fst(&self, possible_resolved_values: HashSet<u32>) -> GazetteerParserResult<fst::Fst> {
+    fn build_parser_fst(&self, possible_resolved_values: &HashSet<u32>) -> GazetteerParserResult<fst::Fst> {
         let mut resolver_fst = fst::Fst::new();
         // add a start state
         let start_state = resolver_fst.add_state();
@@ -551,7 +676,7 @@ impl Parser {
                 current_head = next_head;
             }
             let final_head = resolver_fst.add_state();
-            resolver_fst.add_arc(current_head, EPS_IDX as i32, res_val as i32, 0.0, final_head);
+            resolver_fst.add_arc(current_head, EPS_IDX as i32, *res_val as i32, 0.0, final_head);
             // we set the weight of the final state using the rank information
             resolver_fst.set_final(final_head, Self::compute_resolved_value_weight(*rank)?);
         }
@@ -591,14 +716,51 @@ impl Parser {
 
         let (input_fst, tokens_range, possible_resolved_values) = self.build_input_fst(input, decoding_threshold)?;
         // println!("NUM POSSIBLE RESOLVED VALUES: {:?}", possible_resolved_values.len());
-        let resolver_fst = self.build_parser_fst(possible_resolved_values)?;
-        let composition = operations::compose(&input_fst, &resolver_fst);
+        let resolver_fst = self.build_parser_fst(&possible_resolved_values)?;
+        let mut composition = operations::compose(&input_fst, &resolver_fst);
+        composition.arc_sort(true);
         if composition.num_states() == 0 {
             return Ok(vec![]);
         }
         let shortest_path = self.get_1_shortest_path(&composition)?;
         let parsing = self.format_string_path(&shortest_path, &tokens_range, decoding_threshold)?;
+
+        // Debug
+        let possible_matches = self.find_possible_matches(input)?;
+        // let parsing = self.parse_input_recursively(input, possible_matches);
+        println!("possible matches {:?}", possible_matches);
+        // Test with lcs
+        // let vec_input = whitespace_tokenizer(input).map(|(_, tok)|
+        // {
+        //     if admissible_tokens.contains(tok) {
+        //         self.symbol_table.find_single_symbol(&tok).unwrap().unwrap()
+        //     }
+        // } ).collect::<Vec<u32>>();
+        // self.test_lcs(input, &possible_resolved_values);
         Ok(parsing)
+    }
+
+    fn parse_input_recursively(&self, input: &str, possible_resolved_values: HashMap<u32, Vec<PossibleMatch>>) {
+        // Find the longest match in the input string
+
+    }
+
+    // DEBUG
+    #[inline(never)]
+    fn test_lcs(&self, input: &str, possible_resolved_values: &HashSet<u32>) -> GazetteerParserResult<u32> {
+        let mut vec_input: Vec<u32> = vec![];
+        for (_, tok) in whitespace_tokenizer(input) {
+            match self.symbol_table.find_single_symbol(&tok)? {
+                Some(value) => vec_input.push(value),
+                None => {}
+            }
+        }
+        for val in possible_resolved_values {
+            let table = LcsTable::new(&vec_input, &self.resolved_value_to_tokens.get(&val).unwrap().1);
+            let lcs = table.longest_common_subsequence();
+            println!("lcs: {:?}", lcs.iter().map(|(a, b)| (self.symbol_table.find_index(**a).unwrap(), self.symbol_table.find_index(**b).unwrap())).collect::<Vec<(String, String)>>());
+        }
+        Ok(1)
     }
 
     fn get_parser_config(&self) -> ParserConfig {
@@ -763,6 +925,27 @@ mod tests {
         let mut gt_edge_cases: HashSet<u32> = HashSet::default();
         gt_edge_cases.insert(parser.symbol_table.find_single_symbol(&fst_format_resolved_value("The Stones")).unwrap().unwrap());
         assert!(parser.edge_cases == gt_edge_cases);
+    }
+
+    #[test]
+    fn test_find_possible_matches() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let possible_matches = parser.find_possible_matches("Je veux écouter les rolling stones");
+        println!("POSSIBLE MATCHES {:?}", possible_matches);
+
     }
 
     #[test]

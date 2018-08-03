@@ -58,7 +58,91 @@ impl RandomStringGenerator {
     }
 }
 
-fn criterion_benchmark(c: &mut Criterion) {
+fn artist_gazetteer(c: &mut Criterion) {
+    // Real-world artist gazetteer
+    // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+    // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+    // let gaz = Gazetteer{ data };
+    // DEBUG
+    let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
+    let fraction = 0.01;
+    // DEBUG
+    println!("FRACTION {:?}", fraction);
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+    // DEBUG
+    println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
+    println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
+    println!("NUM STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
+    println!("NUM EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
+
+    c.bench_function("Parse artist request - rolling stones - threhold 0.6", move |b| {
+        b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
+    });
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+
+    c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
+        b.iter(|| parser.run("I'd like to listen to the stones", 0.6))
+    });
+
+}
+
+fn album_gazetteer(c: &mut Criterion) {
+    // Real-world albums gazetteer
+    // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+    // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+    // let gaz = Gazetteer{ data };
+    // DEBUG
+    let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+    let fraction = 0.01;
+    // DEBUG
+    println!("FRACTION {:?}", fraction);
+
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    // parser.compute_stop_words(fraction);
+    // DEBUG
+    println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
+    // println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
+    println!("STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
+    println!("EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
+
+    // c.bench_function("Parse album request - black and white album - threhold 0.6", move |b| {
+    //     b.iter(|| parser.run("Je veux écouter le black and white album", 0.6))
+    // });
+
+    // let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    // parser.compute_stop_words(fraction);
+    // DEBUG
+    println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.6));
+    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.6", move |b| {
+        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.6))
+    });
+
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+    println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
+    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.5", move |b| {
+        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.5))
+    });
+
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+    println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.7));
+    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.7", move |b| {
+        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.7))
+    });
+
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+    // DEBUG
+    println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.6));
+    c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.6", move |b| {
+        b.iter(|| parser.run("the veux écouter dark side of the moon", 0.6))
+    });
+}
+
+fn random_strings(c: &mut Criterion) {
 
     // Random gazetteer with low redundancy
     let mut rsg = RandomStringGenerator::new(10000);
@@ -70,7 +154,11 @@ fn criterion_benchmark(c: &mut Criterion) {
             resolved_value: val,
         });
     }
-    let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+    let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+    parser.compute_stop_words(0.01);
+    // DEBUG
+    println!("STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
+    println!("EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
 
     c.bench_function("Parse random value - low redundancy", move |b| {
         b.iter(|| parser.run(&rsg.generate(10), 0.5))
@@ -86,40 +174,18 @@ fn criterion_benchmark(c: &mut Criterion) {
             resolved_value: val.to_lowercase(),
         });
     }
-    let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+    let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+    // parser.compute_stop_words(0.5);
+    // // DEBUG
+    // println!("STOP WORDS {:?}", parser.stop_words.len());
+    // println!("EDGE CASES {:?}", parser.edge_cases.len());
 
     c.bench_function("Parse random value - high redundancy", move |b| {
         b.iter(|| parser.run(&rsg.generate(4), 0.6))
     });
-
-    // Real-world artist gazetteer
-    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer{ data };
-
-    let parser = Parser::from_gazetteer(&gaz).unwrap();
-    c.bench_function("Parse artist request - rolling stones - threhold 0.6", move |b| {
-        b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
-    });
-    let parser = Parser::from_gazetteer(&gaz).unwrap();
-    c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
-        b.iter(|| parser.run("I'd like to listen to the stones", 0.6))
-    });
-
-    // Real-world albums gazetteer
-    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer{ data };
-
-    let parser = Parser::from_gazetteer(&gaz).unwrap();
-    c.bench_function("Parse album request - black and white album - threhold 0.6", move |b| {
-        b.iter(|| parser.run("Je veux écouter le black and white album", 0.6))
-    });
-    let parser = Parser::from_gazetteer(&gaz).unwrap();
-    c.bench_function("Parse album request - dark side of the moon - threshold 0.6", move |b| {
-        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.6))
-    });
 }
 
-criterion_group!(benches, criterion_benchmark);
+// DEBUG
+// criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
+criterion_group!(benches, album_gazetteer);
 criterion_main!(benches);
