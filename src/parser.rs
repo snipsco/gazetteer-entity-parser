@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+// use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::{Entry};
-// use fnv::FnvHashMap as HashMap;
-// use fnv::FnvHashSet as HashSet;
+use fnv::FnvHashMap as HashMap;
+use fnv::FnvHashSet as HashSet;
 use std::collections::BinaryHeap;
 // use rustc_hash::FxHashMap as HashMap;
 // use rustc_hash::FxHashSet as HashSet;
@@ -244,6 +244,7 @@ impl Parser {
     // (range of match, number of skips, index of last matched token in the resolved value)
     #[inline(never)]
     fn find_possible_matches(&self, input: &str, threshold: f32) -> GazetteerParserResult<BinaryHeap<PossibleMatch>> {
+        // let mut possible_matches: HashMap<u32, PossibleMatch> = HashMap::with_capacity_and_hasher(10000, Default::default());
         let mut possible_matches: HashMap<u32, PossibleMatch> = HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
