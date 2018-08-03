@@ -142,6 +142,14 @@ fn album_gazetteer(c: &mut Criterion) {
     c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.6", move |b| {
         b.iter(|| parser.run("the veux écouter dark side of the moon", 0.6))
     });
+
+    let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+    parser.compute_stop_words(fraction);
+    // DEBUG
+    println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
+    c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.5", move |b| {
+        b.iter(|| parser.run("the veux écouter dark side of the moon", 0.5))
+    });
 }
 
 fn random_strings(c: &mut Criterion) {
@@ -189,6 +197,6 @@ fn random_strings(c: &mut Criterion) {
 
 // DEBUG
 // criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
-// criterion_group!(benches, album_gazetteer);
-criterion_group!(benches, artist_gazetteer);
+criterion_group!(benches, album_gazetteer);
+// criterion_group!(benches, artist_gazetteer);
 criterion_main!(benches);
