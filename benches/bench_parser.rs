@@ -76,12 +76,14 @@ fn artist_gazetteer(c: &mut Criterion) {
     println!("NUM STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
     println!("NUM EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
 
+    println!("{:?}", parser.run("I'd like to listen to some rolling stones", 0.6));
     c.bench_function("Parse artist request - rolling stones - threhold 0.6", move |b| {
         b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
     });
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.compute_stop_words(fraction);
 
+    println!("{:?}", parser.run("I'd like to listen to the stones", 0.6));
     c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
         b.iter(|| parser.run("I'd like to listen to the stones", 0.6))
     });
@@ -100,7 +102,7 @@ fn album_gazetteer(c: &mut Criterion) {
     println!("FRACTION {:?}", fraction);
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    // parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction);
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
     // println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
@@ -187,5 +189,6 @@ fn random_strings(c: &mut Criterion) {
 
 // DEBUG
 // criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
-criterion_group!(benches, album_gazetteer);
+// criterion_group!(benches, album_gazetteer);
+criterion_group!(benches, artist_gazetteer);
 criterion_main!(benches);
