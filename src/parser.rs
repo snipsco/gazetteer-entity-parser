@@ -227,8 +227,9 @@ impl Parser {
             let range_end = range.end;
             match self.symbol_table.find_single_symbol(&token)? {
                 Some(value) => {
-                    for res_val in self.get_resolved_values_from_token(&value)? {
-                        if !self.stop_words.contains(&value) {
+
+                    if !self.stop_words.contains(&value) {
+                        for res_val in self.get_resolved_values_from_token(&value)? {
                             let entry = possible_matches.entry(*res_val);
                             match entry {
                                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
@@ -238,16 +239,14 @@ impl Parser {
                                     }
                                 }
                             }
-                        } else {
-                            skipped_tokens.insert(token_idx, (range_start..range_end, value));
-                            if !self.edge_cases.contains(res_val) {
-                                let entry = possible_matches.entry(*res_val);
-                                match entry {
-                                    Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
-                                    _ => {}
-                                }
-                            } else {
-                                // Adding with a threshold of one
+                        }
+                    } else {
+                        skipped_tokens.insert(token_idx, (range_start..range_end, value));
+                        // Iterate over all edge cases and try to add or update corresponding
+                        // PossibleMatch's
+                        let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
+                        for res_val in &self.edge_cases {
+                            if res_vals_from_token.contains(&res_val) {
                                 let entry = possible_matches.entry(*res_val);
                                 match entry {
                                     Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, 1.0, &mut matches_heap),
@@ -259,7 +258,48 @@ impl Parser {
                                 }
                             }
                         }
+                        // Iterate over current possible matches containing the stop word and
+                        // try to grow them (but do not initiate a new possible match)
+                        for (res_val, mut possible_match) in &mut possible_matches {
+                            if res_vals_from_token.contains(res_val) {
+                                self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap)
+                            }
+                        }
                     }
+
+                    // for res_val in self.get_resolved_values_from_token(&value)? {
+                    //     if !self.stop_words.contains(&value) {
+                    //         let entry = possible_matches.entry(*res_val);
+                    //         match entry {
+                    //             Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
+                    //             Entry::Vacant(entry) => {
+                    //                 if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens)? {
+                    //                     entry.insert(new_possible_match);
+                    //                 }
+                    //             }
+                    //         }
+                    //     } else {
+                    //         skipped_tokens.insert(token_idx, (range_start..range_end, value));
+                    //         if !self.edge_cases.contains(res_val) {
+                    //             let entry = possible_matches.entry(*res_val);
+                    //             match entry {
+                    //                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
+                    //                 _ => {}
+                    //             }
+                    //         } else {
+                    //             // Adding with a threshold of one
+                    //             let entry = possible_matches.entry(*res_val);
+                    //             match entry {
+                    //                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, 1.0, &mut matches_heap),
+                    //                 Entry::Vacant(entry) => {
+                    //                     if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, 1.0, &skipped_tokens)? {
+                    //                         entry.insert(new_possible_match);
+                    //                     }
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
                 },
                 None => continue
             }
@@ -609,7 +649,7 @@ mod tests {
 
         // Value starting with a stop word
         let parsed = parser
-            .run("je veux écouter les the rolling", 0.0)
+            .run("je veux écouter les the rolling", 0.6)
             .unwrap();
         assert_eq!(
             parsed,
@@ -618,6 +658,21 @@ mod tests {
                     raw_value: "the rolling".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
                     range: 20..31,
+                },
+            ]
+        );
+
+        // Value starting with a stop word and ending with one
+        let parsed = parser
+            .run("je veux écouter les the rolling stones", 1.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "the rolling stones".to_string(),
+                    resolved_value: "The Rolling Stones".to_string(),
+                    range: 20..38,
                 },
             ]
         );

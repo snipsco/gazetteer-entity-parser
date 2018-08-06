@@ -60,11 +60,11 @@ impl RandomStringGenerator {
 
 fn artist_gazetteer(c: &mut Criterion) {
     // Real-world artist gazetteer
-    // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-    // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    // let gaz = Gazetteer{ data };
+    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+    let gaz = Gazetteer{ data };
     // DEBUG
-    let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
+    // let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
     let fraction = 0.01;
     // DEBUG
     println!("FRACTION {:?}", fraction);
@@ -92,11 +92,11 @@ fn artist_gazetteer(c: &mut Criterion) {
 
 fn album_gazetteer(c: &mut Criterion) {
     // Real-world albums gazetteer
-    // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-    // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    // let gaz = Gazetteer{ data };
+    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+    let gaz = Gazetteer{ data };
     // DEBUG
-    let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+    // let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
     let fraction = 0.01;
     // DEBUG
     println!("FRACTION {:?}", fraction);
@@ -196,7 +196,7 @@ fn random_strings(c: &mut Criterion) {
 }
 
 // DEBUG
-// criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
-criterion_group!(benches, album_gazetteer);
+criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
+// criterion_group!(benches, album_gazetteer);
 // criterion_group!(benches, artist_gazetteer);
 criterion_main!(benches);
