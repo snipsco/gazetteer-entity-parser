@@ -5,7 +5,7 @@
 use std::path::Path;
 use errors::GazetteerParserResult;
 // use std::collections::{HashMap};
-use rustc_hash::FxHashMap as HashMap;
+use fnv::FnvHashMap as HashMap;
 use std::fs;
 use serde::{Serialize};
 use rmps::{Serializer, from_read};

@@ -58,10 +58,7 @@ extern crate failure;
 extern crate serde;
 extern crate serde_json;
 extern crate rmp_serde as rmps;
-extern crate snips_fst;
 extern crate fnv;
-extern crate rustc_hash;
-extern crate lcs;
 
 #[macro_use]
 extern crate serde_derive;

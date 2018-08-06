@@ -1,25 +1,15 @@
 use std::cmp::Ordering;
-use std::cmp::max;
-// use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::{Entry};
 use fnv::FnvHashMap as HashMap;
 use fnv::FnvHashSet as HashSet;
 use std::collections::BinaryHeap;
-// use rustc_hash::FxHashMap as HashMap;
-// use rustc_hash::FxHashSet as HashSet;
-// use fnv::FnvHashMap as HashMap;
-// use fnv::FnvHashSet as HashSet;
-use constants::RESTART_IDX;
-use constants::*;
 use data::EntityValue;
 use data::Gazetteer;
+use constants::*;
 use errors::GazetteerParserResult;
 use failure::ResultExt;
 use serde_json;
-use snips_fst::string_paths_iterator::StringPath;
-use snips_fst::arc_iterator::ArcIterator;
 use symbol_table::GazetteerParserSymbolTable;
-use snips_fst::{fst, operations};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
@@ -27,9 +17,7 @@ use utils::whitespace_tokenizer;
 use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
 use serde::{Serialize};
 use rmps::{Serializer, from_read};
-use lcs::LcsTable;
 
-// type HashMap<K, V> = std::collections::HashMap<K, V, FnvHasher>;
 
 /// Struct representing the parser. The `symbol_table` attribute holds the symbol table used
 /// to create the parsing FSTs. The Parser will match the longest possible contiguous substrings
@@ -93,8 +81,6 @@ impl PartialOrd for PossibleMatch {
         Some(self.cmp(other))
     }
 }
-
-
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
 /// will be a vector of ParsedValue. The `range` attribute is the range of the characters
@@ -215,10 +201,6 @@ impl Parser {
         Ok(parser)
     }
 
-
-    /// get the admissible tokens
-    // fn filter_possible_resolutions(possible_resolved_values_counts: &HashSet<i32>, decoding_threshold: f32) -> GazetteerParserResult<HashSet<i32>
-
     /// get resolved value (DEBUG)
     #[inline(never)]
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> GazetteerParserResult<&(u32, Vec<u32>)> {
@@ -231,47 +213,22 @@ impl Parser {
         Ok(self.token_to_resolved_values.get(token).ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
     }
 
-    /// get number of raw tokens corresponding to a resolved value
-    #[inline(never)]
-    fn get_n_tokens(&self, resolved_value: &u32) -> GazetteerParserResult<usize> {
-        let (_, tokens) = self.get_tokens_from_resolved_value(resolved_value)?;
-        Ok(tokens.len())
-    }
-
     /// Find all possible matches in a string.
     /// Returns a hashmap, indexed by resvolved values. The corresponding value is a vec of tuples
     /// each tuple is a possible match for the resvoled value, and is made of
     // (range of match, number of skips, index of last matched token in the resolved value)
     #[inline(never)]
     fn find_possible_matches(&self, input: &str, threshold: f32) -> GazetteerParserResult<BinaryHeap<PossibleMatch>> {
-        // let mut possible_matches: HashMap<u32, PossibleMatch> = HashMap::with_capacity_and_hasher(10000, Default::default());
         let mut possible_matches: HashMap<u32, PossibleMatch> = HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
         'outer: for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
-            // DEBUG
-            // println!("POSSIBLE MATCHES {:?}", possible_matches);
-            // println!("MATCHES HEAP {:?}", matches_heap);
             let range_start = range.start;
             let range_end = range.end;
             match self.symbol_table.find_single_symbol(&token)? {
                 Some(value) => {
                     for res_val in self.get_resolved_values_from_token(&value)? {
-                        // DEBUG
-                        // println!("POSSIBLE MATCHES LEN {:?}", possible_matches.len());
-                        // println!("POSSIBLE MATCHES CONTAINS RES VAL: {:?}", possible_matches.contains_key(res_val));
                         if !self.stop_words.contains(&value) {
-                            // Not adding any new value due to stop word
-
-                            // if let Some(&mut mut possible_match) = possible_matches.get_mut(res_val) {
-                            //     self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap)
-                            // } else {
-                            //     if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens)? {
-                            //         possible_matches.insert(*res_val, new_possible_match);
-                            //     }
-                            //
-                            // }
-
                             let entry = possible_matches.entry(*res_val);
                             match entry {
                                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
@@ -281,36 +238,13 @@ impl Parser {
                                     }
                                 }
                             }
-                            // possible_matches.entry(*res_val)
-                            //     .and_modify(|mut possible_match| self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap))
-                            // .or_insert_with(|| self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, &skipped_tokens).unwrap());
                         } else {
-                            // if !self.edge_cases.contains(res_val) {
-                            //     skipped_tokens.insert(token_idx, (range_start..range_end, value));
-                            //     possible_matches.entry(*res_val)
-                            //         .and_modify(|mut possible_match| self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap));
-                            // } else {
-                            //     skipped_tokens.insert(token_idx, (range_start..range_end, value));
-                            //
-                            //     if let Some(possible_match) = possible_matches.get_mut(res_val) {
-                            //         self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, 1.0, &mut matches_heap)
-                            //     } else {
-                            //         if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens)? {
-                            //             possible_matches.insert(*res_val, new_possible_match);
-                            //         }
-                            //
-                            //     }
                             skipped_tokens.insert(token_idx, (range_start..range_end, value));
                             if !self.edge_cases.contains(res_val) {
                                 let entry = possible_matches.entry(*res_val);
                                 match entry {
                                     Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
                                     _ => {}
-                                    // Entry::Vacant(entry) => {
-                                    //     if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens)? {
-                                    //         entry.insert(new_possible_match);
-                                    //     }
-                                    // }
                                 }
                             } else {
                                 // Adding with a threshold of one
@@ -324,22 +258,12 @@ impl Parser {
                                     }
                                 }
                             }
-
-                                // possible_matches.entry(*res_val)
-                                //     .and_modify(|mut possible_match| self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, 1.0, &mut matches_heap))
-                                //     .or_insert_with(|| self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens).unwrap());
-                            // }
                         }
-                        // DEBUG
-                        // println!("POSSIBLE MATCHES LEN {:?}", possible_matches.len());
                     }
                 },
                 None => continue
             }
         }
-
-        // Add the edge cases
-        // TODO
 
         // Add to the heap the possible matches that remain
         for possible_match in possible_matches.values() {
@@ -347,7 +271,8 @@ impl Parser {
             if possible_match.n_consumed_tokens > possible_match.raw_value_length {
                 bail!("Consumed more tokens than are available: {:?}", possible_match)
             }
-            // println!("CHECKING THRESHOLD FOR {:?}", possible_match);
+            // In case the resolved value is an edge case, we set the threshold to 1 for this
+            // value
             let val_threshold = match self.edge_cases.contains(&possible_match.resolved_value) {
                 false => threshold,
                 true => 1.0
@@ -356,9 +281,7 @@ impl Parser {
                 matches_heap.push(possible_match.clone());
             }
         }
-        // DEBUG
-        // println!("LAST POSSIBLE MATCHES {:?}", possible_matches);
-        // println!("LAST MATCHES HEAP {:?}", matches_heap);
+
         Ok(matches_heap)
     }
 
@@ -366,19 +289,14 @@ impl Parser {
     #[inline(never)]
     fn update_previous_match(&self, possible_match: &mut PossibleMatch, res_val: &u32, token_idx: usize, value: u32, range_start: usize, range_end: usize, threshold: f32, ref mut matches_heap: &mut BinaryHeap<PossibleMatch>) {
 
-        // println!("POSSIBLE MATCH:  {:?}", possible_match);
-        // let mut skip_new_val = false;
+        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         {
             if possible_match.resolved_value == *res_val && token_idx == possible_match.last_token_in_input + 1 {
                 // Grow the last Possible Match
                 // Find the next token in the resolved value that matches the
                 // input token
-                let (_rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
                 for otoken_idx in possible_match.last_token_in_resolution + 1..otokens.len() {
                     let otok = otokens[otoken_idx];
-                    // DEBUG
-                    // println!("OTOK: {:?}", otok);
-                    // println!("VALUE: {:?}", value);
                     if value == otok {
                         possible_match.range.end = range_end;
                         possible_match.n_consumed_tokens += 1;
@@ -403,7 +321,6 @@ impl Parser {
             matches_heap.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| format_err!("Tokens list should contain value but doesn't")).unwrap();
         *possible_match = PossibleMatch {
             resolved_value: *res_val,
@@ -415,9 +332,6 @@ impl Parser {
             n_consumed_tokens: 1,
             rank: *rank
         };
-        // DEBUG
-        // println!("POSSIBLE MATCHES AFTER AND MODIFY {:?}", possible_matches);
-        // println!("NEW POSSIBLE MATCH {:?}", *possible_match);
     }
 
     /// when we insert a new possible match, we need to backtrack to check if the value did not
@@ -438,8 +352,7 @@ impl Parser {
             rank: *rank
         };
         let mut n_skips = last_token_in_resolution as u32;
-        // println!("ABOUT TO ENTER BACKTRACKING LOOP");
-        // println!("{:?}", (0..token_idx).rev());
+
         // Bactrack to check if we left out from skipped words at the beginning
         'outer: for btok_idx in (0..token_idx).rev() {
             // println!("BACKTRACKING {:?} STEPS", btok_idx);
@@ -463,21 +376,7 @@ impl Parser {
             }
         }
 
-        // DEBUG
-        // println!("NEW POSSIBLE MATCH {:?}",
-        //     PossibleMatch {
-        //         resolved_value: *res_val,
-        //         range: range_start..range_end,
-        //         tokens_range: token_idx..(token_idx + 1),
-        //         last_token_in_input: token_idx,
-        //         last_token_in_resolution,
-        //         n_consumed_tokens: 1,
-        //         raw_value_length: otokens.len() as u32,
-        //         rank: *rank
-        //     }
-        // );
-
-        // Conservation estimate of threshold condition for early stopping
+        // Conservative estimate of threshold condition for early stopping
         if possible_match.raw_value_length < n_skips {
             bail!("Skipped more tokens than are available: error")
         }
@@ -508,24 +407,17 @@ impl Parser {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
-        // let sorted_matches = matches_heap.into_sorted_vec();
-        // let rev_sorted_matches_iterator = sorted_matches.iter().rev();
+
         'outer: for possible_match in matches_heap.into_sorted_vec().iter().rev() {
 
             let tokens_range_start = possible_match.tokens_range.start;
             let tokens_range_end = possible_match.tokens_range.end;
             for tok_idx in tokens_range_start..tokens_range_end {
                 if taken_tokens.contains(&tok_idx) {
-                    // DEBUG
-                    // println!("ALREADY TAKEN {:?}", tok_idx);
                     continue 'outer
-                } else {
-                    // DEBUG
-                    // println!("NOT ALREADY TAKEN {:?}", tok_idx);
                 }
             }
-            // DEBUG
-            // println!("ADDING THE VALUE");
+
             let range_start = possible_match.range.start;
             let range_end = possible_match.range.end;
             parsing.push(
@@ -542,7 +434,8 @@ impl Parser {
                 break
             }
         }
-        // Find the longest match in the input string
+
+        // Output ordered parsing
         Ok(parsing.into_sorted_vec())
     }
 
@@ -664,7 +557,7 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.compute_stop_words(0.51);
+        parser.compute_stop_words(0.51).unwrap();
 
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
@@ -705,7 +598,7 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.compute_stop_words(0.51);
+        parser.compute_stop_words(0.51).unwrap();
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(parser.symbol_table.find_single_symbol("the").unwrap().unwrap());
         gt_stop_words.insert(parser.symbol_table.find_single_symbol("stones").unwrap().unwrap());
@@ -715,7 +608,7 @@ mod tests {
         assert!(parser.edge_cases == gt_edge_cases);
 
         // Value starting with a stop word
-        let mut parsed = parser
+        let parsed = parser
             .run("je veux écouter les the rolling", 0.0)
             .unwrap();
         assert_eq!(
@@ -730,7 +623,7 @@ mod tests {
         );
 
         // Value starting with two stop words
-        let mut parsed = parser
+        let parsed = parser
             .run("je veux écouter les the stones rolling", 1.0)
             .unwrap();
         assert_eq!(
@@ -745,7 +638,7 @@ mod tests {
         );
 
         // Edge case
-        let mut parsed = parser
+        let parsed = parser
             .run("je veux écouter les the stones", 1.0)
             .unwrap();
         assert_eq!(
@@ -1116,13 +1009,6 @@ mod tests {
 
     #[test]
     fn test_repeated_words() {
-        let mut foo: HashMap<u32, u32> = HashMap::default();
-        // DEBUG
-        // foo.insert(42, 42);
-        // foo.entry(42)
-        // .and_modify(|e| { *e = 43})
-        // .or_insert({ 42 });
-        // println!("FOO: {:?}", foo);
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
@@ -1230,7 +1116,7 @@ mod tests {
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let fraction = 0.005;
-        parser.compute_stop_words(fraction);
+        parser.compute_stop_words(fraction).unwrap();
         println!("FRACTION {:?}", fraction);
         println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
         println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
@@ -1266,7 +1152,7 @@ mod tests {
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let fraction = 0.01;
-        parser.compute_stop_words(fraction);
+        parser.compute_stop_words(fraction).unwrap();
         // println!("FRACTION {:?}", fraction);
         // println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
         // println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
