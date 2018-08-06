@@ -69,7 +69,7 @@ fn artist_gazetteer(c: &mut Criterion) {
     // DEBUG
     println!("FRACTION {:?}", fraction);
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
     println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
@@ -81,7 +81,7 @@ fn artist_gazetteer(c: &mut Criterion) {
         b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
     });
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
 
     println!("{:?}", parser.run("I'd like to listen to the stones", 0.6));
     c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
@@ -102,7 +102,7 @@ fn album_gazetteer(c: &mut Criterion) {
     println!("FRACTION {:?}", fraction);
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
     // println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
@@ -122,21 +122,21 @@ fn album_gazetteer(c: &mut Criterion) {
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
     c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.5", move |b| {
         b.iter(|| parser.run("je veux écouter dark side of the moon", 0.5))
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.7));
     c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.7", move |b| {
         b.iter(|| parser.run("je veux écouter dark side of the moon", 0.7))
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     // DEBUG
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.6));
     c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.6", move |b| {
@@ -144,7 +144,7 @@ fn album_gazetteer(c: &mut Criterion) {
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction);
+    parser.compute_stop_words(fraction).unwrap();
     // DEBUG
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
     c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.5", move |b| {
@@ -165,7 +165,7 @@ fn random_strings(c: &mut Criterion) {
         });
     }
     let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-    parser.compute_stop_words(0.01);
+    parser.compute_stop_words(0.01).unwrap();
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
     println!("EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
@@ -184,7 +184,7 @@ fn random_strings(c: &mut Criterion) {
             resolved_value: val.to_lowercase(),
         });
     }
-    let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+    let parser = Parser::from_gazetteer(&gazetteer).unwrap();
     // parser.compute_stop_words(0.5);
     // // DEBUG
     // println!("STOP WORDS {:?}", parser.stop_words.len());
