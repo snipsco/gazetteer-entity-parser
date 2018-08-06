@@ -1,31 +1,6 @@
-use constants::RESOLVED_SYMBOL;
-use constants::SPACE_SYMBOL;
 use std::iter::Peekable;
 use std::ops::Range;
 use std::str::Chars;
-
-/// This function formats the resolved value output by the parser fst, removing all
-/// whitespaces. Its inverse is fst_unformat_resolved_value.
-pub fn fst_format_resolved_value(string: &str) -> String {
-    let formatted: String = string
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() {
-                SPACE_SYMBOL.to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect();
-    format!("{}:{}", RESOLVED_SYMBOL, formatted)
-}
-
-/// This function is the inverse of fst_format_resolved_value. It formats the output of the parser fst to return the resolved value
-pub fn fst_unformat_resolved_value(string: &str) -> String {
-    string
-        .replace(&format!("{}:", RESOLVED_SYMBOL), "")
-        .replace(SPACE_SYMBOL, " ")
-}
 
 /// Check whether the best parsing matches the threshold condition or not
 #[inline(never)]
@@ -87,31 +62,6 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fst_format_works() {
-        let formatted = fst_format_resolved_value("hello world");
-        let unformatted = fst_unformat_resolved_value(&formatted);
-        assert_eq!(formatted, "__RESOLVED__:hello__SPACE__world");
-        assert_eq!(unformatted, "hello world");
-
-        let formatted = fst_format_resolved_value("hello_ world");
-        let unformatted = fst_unformat_resolved_value(&formatted);
-        assert_eq!(formatted, "__RESOLVED__:hello___SPACE__world");
-        assert_eq!(unformatted, "hello_ world");
-
-        let formatted = fst_format_resolved_value("hey\tyou");
-        let unformatted = fst_unformat_resolved_value(&formatted);
-        assert_eq!(formatted, "__RESOLVED__:hey__SPACE__you");
-        assert_eq!(unformatted, "hey you");
-    }
-
-    #[test]
-    fn fst_format_works_with_unicode_whitespace() {
-        let sample = "Quand est-ce ?";
-        let formatted = fst_format_resolved_value(sample);
-        assert_eq!(formatted, "__RESOLVED__:Quand__SPACE__est-ce__SPACE__?");
-    }
 
     #[test]
     fn whitespace_tokenizer_works_with_mutiple_spaces() {

@@ -13,8 +13,7 @@ use symbol_table::GazetteerParserSymbolTable;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use utils::whitespace_tokenizer;
-use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
+use utils::{whitespace_tokenizer, check_threshold};
 use serde::{Serialize};
 use rmps::{Serializer, from_read};
 
@@ -25,7 +24,10 @@ use rmps::{Serializer, from_read};
 /// matters: In case of ambiguity between two parsings, the Parser will output the value that was
 /// added first (see Gazetteer).
 pub struct Parser {
-    symbol_table: GazetteerParserSymbolTable,
+    tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
+    resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resvoled values
+    // The latter differs from the first one in that it can contain the same resolved value
+    // multiple times (to allow for multiple raw values corresponidng to the same resvoled value)
     token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
     token_to_resolved_values: HashMap<u32, HashSet<u32>>,  // maps token to set of resolved values containing token
     resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>,  // maps resolved value to a tuple (rank, tokens)
@@ -35,7 +37,8 @@ pub struct Parser {
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
-    symbol_table_filename: String,
+    tokens_symbol_table_filename: String,
+    resolved_symbol_table_filename: String,
     version: String,
     token_to_resolved_values: String,
     resolved_value_to_tokens: String,
@@ -116,7 +119,8 @@ impl PartialOrd for ParsedValue {
 impl Parser {
     /// Create an empty parser. Its symbol table contains the minimal symbols used during parsing.
     fn new() -> GazetteerParserResult<Parser> {
-        Ok(Parser { symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default() })
+        Ok(Parser { tokens_symbol_table: GazetteerParserSymbolTable::new(),
+            resolved_symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default() })
     }
 
     /// Add a single entity value to the parser. This function is kept private to promote
@@ -125,12 +129,12 @@ impl Parser {
     fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
-        let res_value_idx = self.symbol_table.add_symbol(&fst_format_resolved_value(&entity_value.resolved_value), true)?;
+        let res_value_idx = self.resolved_symbol_table.add_symbol(&entity_value.resolved_value, true)?;
         // if self.resolved_value_to_tokens.contains_key(&res_value_idx) {
         //     bail!("Cannot add value {:?} twice to the parser");
         // }
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            let token_idx = self.symbol_table.add_symbol(&token, false)?;
+            let token_idx = self.tokens_symbol_table.add_symbol(&token, false)?;
 
             // Update token_to_resolved_values map
             self.token_to_resolved_values.entry(token_idx)
@@ -179,14 +183,13 @@ impl Parser {
 
     /// Get the set of stop words
     pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>> {
-        self.stop_words.iter().map(|idx| self.symbol_table.find_index(*idx)).collect()
+        self.stop_words.iter().map(|idx| self.tokens_symbol_table.find_index(*idx)).collect()
     }
 
     /// Get the set of edge cases, containing only stop words
     pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>> {
         Ok(self.edge_cases.iter().map(|idx| {
-            let symbol: String = self.symbol_table.find_index(*idx).unwrap();
-            fst_unformat_resolved_value(&symbol)
+            self.resolved_symbol_table.find_index(*idx).unwrap()
         }).collect())
     }
 
@@ -225,7 +228,7 @@ impl Parser {
         'outer: for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
             let range_start = range.start;
             let range_end = range.end;
-            match self.symbol_table.find_single_symbol(&token)? {
+            match self.tokens_symbol_table.find_single_symbol(&token)? {
                 Some(value) => {
 
                     if !self.stop_words.contains(&value) {
@@ -266,40 +269,6 @@ impl Parser {
                             }
                         }
                     }
-
-                    // for res_val in self.get_resolved_values_from_token(&value)? {
-                    //     if !self.stop_words.contains(&value) {
-                    //         let entry = possible_matches.entry(*res_val);
-                    //         match entry {
-                    //             Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
-                    //             Entry::Vacant(entry) => {
-                    //                 if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, threshold, &skipped_tokens)? {
-                    //                     entry.insert(new_possible_match);
-                    //                 }
-                    //             }
-                    //         }
-                    //     } else {
-                    //         skipped_tokens.insert(token_idx, (range_start..range_end, value));
-                    //         if !self.edge_cases.contains(res_val) {
-                    //             let entry = possible_matches.entry(*res_val);
-                    //             match entry {
-                    //                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap),
-                    //                 _ => {}
-                    //             }
-                    //         } else {
-                    //             // Adding with a threshold of one
-                    //             let entry = possible_matches.entry(*res_val);
-                    //             match entry {
-                    //                 Entry::Occupied(mut entry) =>  self.update_previous_match(&mut *entry.get_mut(), res_val, token_idx, value, range_start, range_end, 1.0, &mut matches_heap),
-                    //                 Entry::Vacant(entry) => {
-                    //                     if let Some(new_possible_match) = self.insert_new_possible_match(res_val, value, range_start, range_end, token_idx, 1.0, &skipped_tokens)? {
-                    //                         entry.insert(new_possible_match);
-                    //                     }
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    // }
                 },
                 None => continue
             }
@@ -464,7 +433,7 @@ impl Parser {
                 ParsedValue {
                     range: range_start..range_end,
                     raw_value: input.chars().skip(range_start).take(range_end - range_start).collect(),
-                    resolved_value: fst_unformat_resolved_value(&self.symbol_table.find_index(possible_match.resolved_value)?)
+                    resolved_value: self.resolved_symbol_table.find_index(possible_match.resolved_value)?
                 }
             );
             for idx in tokens_range_start..tokens_range_end {
@@ -481,7 +450,8 @@ impl Parser {
 
     fn get_parser_config(&self) -> ParserConfig {
         ParserConfig {
-            symbol_table_filename: SYMBOLTABLE_FILENAME.to_string(),
+            resolved_symbol_table_filename: RESOLVED_SYMBOLTABLE_FILENAME.to_string(),
+            tokens_symbol_table_filename: TOKENS_SYMBOLTABLE_FILENAME.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             resolved_value_to_tokens: RESOLVED_VALUE_TO_TOKENS.to_string(),
             token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string(),
@@ -503,8 +473,12 @@ impl Parser {
         let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
         serde_json::to_writer(writer, &config)?;
 
-        self.symbol_table.write_file(
-            folder_name.as_ref().join(config.symbol_table_filename)
+        self.tokens_symbol_table.write_file(
+            folder_name.as_ref().join(config.tokens_symbol_table_filename)
+        )?;
+
+        self.resolved_symbol_table.write_file(
+            folder_name.as_ref().join(config.resolved_symbol_table_filename)
         )?;
 
         let mut token_to_res_val_writer = fs::File::create(folder_name.as_ref().join(config.token_to_resolved_values))?;
@@ -536,9 +510,14 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))?;
         let config: ParserConfig = serde_json::from_reader(metadata_file)?;
 
-        let symbol_table = GazetteerParserSymbolTable::from_path(
-            folder_name.as_ref().join(config.symbol_table_filename)
+        let tokens_symbol_table = GazetteerParserSymbolTable::from_path(
+            folder_name.as_ref().join(config.tokens_symbol_table_filename)
         )?;
+
+        let resolved_symbol_table = GazetteerParserSymbolTable::from_path(
+            folder_name.as_ref().join(config.resolved_symbol_table_filename)
+        )?;
+
         let token_to_res_val_path = folder_name.as_ref().join(config.token_to_resolved_values);
         let token_to_res_val_file = fs::File::open(&token_to_res_val_path)
             .with_context(|_| format!("Cannot open metadata file {:?}", token_to_res_val_path))?;
@@ -564,7 +543,7 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
         let edge_cases = from_read(edge_cases_file)?;
 
-        Ok(Parser { symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases })
+        Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases })
     }
 }
 
@@ -608,7 +587,8 @@ mod tests {
         // compare token_to_resolved_values
         assert!(parser.token_to_resolved_values == reloaded_parser.token_to_resolved_values);
         // Compare symbol tables
-        assert!(parser.symbol_table == reloaded_parser.symbol_table);
+        assert!(parser.tokens_symbol_table == reloaded_parser.tokens_symbol_table);
+        assert!(parser.resolved_symbol_table == reloaded_parser.resolved_symbol_table);
         // Compare token counts
         assert!(parser.token_to_count == reloaded_parser.token_to_count);
         // Compare stop words
@@ -640,11 +620,11 @@ mod tests {
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
         parser.compute_stop_words(0.51).unwrap();
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
-        gt_stop_words.insert(parser.symbol_table.find_single_symbol("the").unwrap().unwrap());
-        gt_stop_words.insert(parser.symbol_table.find_single_symbol("stones").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("the").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap());
         assert!(parser.stop_words == gt_stop_words);
         let mut gt_edge_cases: HashSet<u32> = HashSet::default();
-        gt_edge_cases.insert(parser.symbol_table.find_single_symbol(&fst_format_resolved_value("The Stones")).unwrap().unwrap());
+        gt_edge_cases.insert(parser.resolved_symbol_table.find_single_symbol("The Stones").unwrap().unwrap());
         assert!(parser.edge_cases == gt_edge_cases);
 
         // Value starting with a stop word
@@ -955,7 +935,7 @@ mod tests {
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "Quand est-ce ?".to_string(),
+                resolved_value: "Quand est-ce ?".to_string(),
                 range: 4..13,
                 raw_value: "quand est".to_string(),
             }]
