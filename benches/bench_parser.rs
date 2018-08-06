@@ -65,11 +65,11 @@ fn artist_gazetteer(c: &mut Criterion) {
     let gaz = Gazetteer{ data };
     // DEBUG
     // let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
-    let fraction = 0.01;
+    let n_stop_words = 30;
     // DEBUG
-    println!("FRACTION {:?}", fraction);
+    println!("N STOP WORDS {:?}", n_stop_words);
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
     println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
@@ -81,7 +81,7 @@ fn artist_gazetteer(c: &mut Criterion) {
         b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
     });
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
 
     println!("{:?}", parser.run("I'd like to listen to the stones", 0.6));
     c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
@@ -97,12 +97,12 @@ fn album_gazetteer(c: &mut Criterion) {
     let gaz = Gazetteer{ data };
     // DEBUG
     // let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
-    let fraction = 0.01;
+    let n_stop_words = 50;
     // DEBUG
-    println!("FRACTION {:?}", fraction);
+    println!("N STOP WORDS {:?}", n_stop_words);
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     // DEBUG
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
     // println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
@@ -122,21 +122,21 @@ fn album_gazetteer(c: &mut Criterion) {
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
     c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.5", move |b| {
         b.iter(|| parser.run("je veux écouter dark side of the moon", 0.5))
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.7));
     c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.7", move |b| {
         b.iter(|| parser.run("je veux écouter dark side of the moon", 0.7))
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     // DEBUG
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.6));
     c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.6", move |b| {
@@ -144,7 +144,7 @@ fn album_gazetteer(c: &mut Criterion) {
     });
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-    parser.compute_stop_words(fraction).unwrap();
+    parser.set_stop_words(n_stop_words, None).unwrap();
     // DEBUG
     println!("PARSING: {:?}", parser.run("je veux écouter dark side of the moon", 0.5));
     c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.5", move |b| {
@@ -165,8 +165,10 @@ fn random_strings(c: &mut Criterion) {
         });
     }
     let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-    parser.compute_stop_words(0.01).unwrap();
+    let n_stop_words = 50;
+    parser.set_stop_words(n_stop_words, None).unwrap();
     // DEBUG
+    println!("N STOP WORDS {:?}", n_stop_words);
     println!("STOP WORDS {:?}", parser.get_stop_words().unwrap().len());
     println!("EDGE CASES {:?}", parser.get_edge_cases().unwrap().len());
 

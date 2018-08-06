@@ -158,17 +158,55 @@ impl Parser {
         Ok(())
     }
 
-    /// Update an internal set of stop words, with frequency higher than threshold_freq in the
-    /// gazetteer, and corresponding set of edge cases, containing values only composed of stop
-    /// words
-    pub fn compute_stop_words(&mut self, threshold_freq: f32) -> GazetteerParserResult<()> {
-        // Update the set of stop words
-        let n_resolved_values = self.resolved_value_to_tokens.len() as f32;
-        for (token, count) in &self.token_to_count {
-            if *count as f32 / n_resolved_values as f32 > threshold_freq {
-                self.stop_words.insert(*token);
+    /// Update an internal set of stop words and corresponding edge cases.
+    /// The set of stop words is made of the `n_stop_words` most frequent raw tokens in the
+    /// gazetteer used to generate the parser. An optional `additional_stop_words` vector of
+    /// strings can be added to the stop words. The edge cases are defined to the be the resolved
+    /// values whose raw value is composed only of stop words. There are examined seperately
+    /// during parsing, and will match if and only if they are present verbatim in the input
+    /// string.
+    pub fn set_stop_words(&mut self, n_stop_words: usize, additional_stop_words: Option<Vec<&str>>) -> GazetteerParserResult<()> {
+        // Update the set of stop words with the most frequent words in the gazetteer
+        if n_stop_words > 0 {
+            let mut smallest_count: u32 = <u32>::max_value();
+            let mut tok_with_smallest_count: u32 = 0;
+            let mut largest_counts: HashMap<u32, u32> = HashMap::default();
+            for (token, count) in &self.token_to_count {
+                if self.stop_words.len() < n_stop_words {
+                    self.stop_words.insert(*token);
+                    largest_counts.insert(*token, *count);
+                    if count < &smallest_count {
+                        smallest_count = *count;
+                        tok_with_smallest_count = *token;
+                    }
+                } else {
+                    if count > &smallest_count {
+                        self.stop_words.remove(&tok_with_smallest_count);
+                        largest_counts.remove(&tok_with_smallest_count);
+                        self.stop_words.insert(*token);
+                        largest_counts.insert(*token, *count);
+                        smallest_count = *count;
+                        tok_with_smallest_count = *token;
+                        for (prev_tok, prev_count) in &largest_counts {
+                            if prev_count < &smallest_count {
+                                smallest_count = *prev_count;
+                                tok_with_smallest_count = *prev_tok;
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        // add the words from the `additional_stop_words` vec (and potentially add them to
+        // the symbol table)
+        if let Some(additional_stop_words_vec) = additional_stop_words {
+            for tok_s in &additional_stop_words_vec {
+                let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
+                self.stop_words.insert(tok_idx);
+            }
+        }
+
         // Update the set of edge_cases. i.e. resolved value that only contain stop words
         'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
             for tok in tokens {
@@ -576,7 +614,7 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.compute_stop_words(0.51).unwrap();
+        parser.set_stop_words(2, None).unwrap();
 
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
@@ -618,10 +656,12 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.compute_stop_words(0.51).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("the").unwrap().unwrap());
         gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("hello").unwrap().unwrap());
         assert!(parser.stop_words == gt_stop_words);
         let mut gt_edge_cases: HashSet<u32> = HashSet::default();
         gt_edge_cases.insert(parser.resolved_symbol_table.find_single_symbol("The Stones").unwrap().unwrap());
@@ -1140,7 +1180,6 @@ mod tests {
     }
 
     #[test]
-    // #[ignore]
     fn real_world_gazetteer() {
 
         // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
@@ -1150,11 +1189,11 @@ mod tests {
         let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-        let fraction = 0.005;
-        parser.compute_stop_words(fraction).unwrap();
-        println!("FRACTION {:?}", fraction);
-        println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
-        println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
+        let n_stop_words = 50;
+        parser.set_stop_words(n_stop_words, None).unwrap();
+        println!("N STOP WORDS {:?}", n_stop_words);
+        println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
+        println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
 
         let parsed = parser
             .run("je veux écouter les rolling stones", 0.6)
@@ -1186,8 +1225,11 @@ mod tests {
         let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-        let fraction = 0.01;
-        parser.compute_stop_words(fraction).unwrap();
+        let n_stop_words = 50;
+        parser.set_stop_words(n_stop_words, None).unwrap();
+        println!("N STOP WORDS {:?}", n_stop_words);
+        println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
+        println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
         // println!("FRACTION {:?}", fraction);
         // println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
         // println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
