@@ -1,8 +1,8 @@
 //! ## Getting Started
 //!
 //! This crate exposes a parser to match and resolve entity values, drawn from a gazetteer, inside
-//! written queries. The parser is based on a finite state transducer (FST) and built from a
-//! ordered list of entity values. The parser will attempt to find and resolve maximal substrings
+//! written queries. The parser is built from an
+//! ordered list of entity values. It will attempt to find and resolve maximal substrings
 //! of the input queries against the gazetteer values, allowing to skip some of the tokens
 //! composing the entity value. More precisely, when several resolutions are possible
 //! - the entity value sharing the most tokens with the input is preferred.
@@ -24,6 +24,10 @@
 //!     raw_value: "the strokes".to_string(),
 //! });
 //! gazetteer.add(EntityValue {
+//!     resolved_value: "The Hives".to_string(),
+//!     raw_value: "the hives".to_string(),
+//! });
+//! gazetteer.add(EntityValue {
 //!     resolved_value: "Jacques Brel".to_string(),
 //!     raw_value: "jacques brel".to_string(),
 //! });
@@ -32,8 +36,8 @@
 //!     raw_value: "daniel brel".to_string(),
 //! });
 //! let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-//! parser.set_stop_words(2, Some(vec!["the", "for"])).unwrap();  // Set as stop words the 2 most
-//! // common words in the gazetteer, plus "the" and "for"
+//! parser.set_stop_words(1, Some(vec!["a", "for"])).unwrap();  // Set as stop words the most
+//! // common word in the gazetteer, plus "the" and "for"
 //! let parsed_stones = parser.run("I want to listen to the stones", 0.5).unwrap();
 //! assert_eq!(
 //!     parsed_stones,
@@ -44,13 +48,13 @@
 //!     }]
 //! );
 //! // Example with an ambiguity, where the artist with smaller rank is preferred
-//! let parsed_brel = parser.run("I want to listen to jacques", 0.5).unwrap();
+//! let parsed_brel = parser.run("I want to listen to brel", 0.5).unwrap();
 //! assert_eq!(
 //!     parsed_brel,
 //!     vec![ParsedValue {
-//!         raw_value: "jacques".to_string(),
+//!         raw_value: "brel".to_string(),
 //!         resolved_value: "Jacques Brel".to_string(),
-//!         range: 20..27,
+//!         range: 20..24,
 //!     }]
 //! );
 //!```

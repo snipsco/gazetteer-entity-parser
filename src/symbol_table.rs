@@ -104,6 +104,22 @@ impl GazetteerParserSymbolTable {
         }
     }
 
+    pub fn remove_symbol(&mut self, symbol: &str) -> GazetteerParserResult<Option<Vec<u32>>> {
+        let indices_values: Vec<u32>;
+        if let Some(indices) = self.find_symbol(symbol)? {
+            indices_values = indices.clone();
+        } else {
+            return Ok(None)
+        }
+
+        // Remove the indices from both hashmaps
+        for idx in &indices_values {
+            self.index_to_string.remove(idx);
+        }
+        self.string_to_indices.remove(symbol);
+        return Ok(Some(indices_values))
+    }
+
     /// Get a vec of all the values in the symbol table
     pub fn get_all_symbols(&self) -> Vec<&String> {
         self.string_to_indices.keys().collect()

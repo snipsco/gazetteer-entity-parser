@@ -5,7 +5,7 @@ extern crate rand;
 extern crate mio_httpc;
 extern crate serde_json;
 
-use gazetteer_entity_parser::{EntityValue, Gazetteer, Parser};
+use gazetteer_entity_parser::{EntityValue, Gazetteer, Parser, ParsedValue};
 use rand::distributions::Alphanumeric;
 use rand::seq::sample_iter;
 use rand::thread_rng;

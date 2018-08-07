@@ -7,7 +7,7 @@ use serde_json;
 use errors::GazetteerParserResult;
 
 /// Struct representing the value of an entity to be added to the parser
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct EntityValue {
     pub resolved_value: String,
     pub raw_value: String,

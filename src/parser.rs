@@ -18,11 +18,10 @@ use serde::{Serialize};
 use rmps::{Serializer, from_read};
 
 
-/// Struct representing the parser. The `symbol_table` attribute holds the symbol table used
-/// to create the parsing FSTs. The Parser will match the longest possible contiguous substrings
-/// of a query that match entity values. The order in which the values are added to the parser
-/// matters: In case of ambiguity between two parsings, the Parser will output the value that was
-/// added first (see Gazetteer).
+/// Struct representing the parser. The Parser will match the longest possible contiguous
+/// substrings of a query that match partial entity values. The order in which the values are
+/// added to the parser matters: In case of ambiguity between two parsings, the Parser will output
+/// the value that was added first (see Gazetteer).
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
@@ -41,17 +40,8 @@ pub struct Parser {
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
-    // tokens_symbol_table_filename: String,
-    // resolved_symbol_table_filename: String,
     version: String,
     parser_filename: String,
-    // token_to_resolved_values: String,
-    // resolved_value_to_tokens: String,
-    // token_to_count: String,
-    // stop_words: String,
-    // edge_cases: String,
-    // n_stop_words: usize,
-    // additional_stop_words: Vec<String>
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -259,8 +249,45 @@ impl Parser {
     /// Add new values to an already trained Parser. This function is used for entity injection.
     /// It takes as arguments a vector of EntityValue's to inject, and a boolean indicating
     /// whether the new values should be prepended to the already existing values (`prepend=true`)
-    /// or appended (`prepend=false`)
-    pub fn inject_new_values(&mut self, new_values: &Vec<EntityValue>, prepend: bool) -> GazetteerParserResult<()> {
+    /// or appended (`prepend=false`). Setting `from_vanilla` to true allows to remove all
+    /// previously injected values before adding the new ones.
+    pub fn inject_new_values(&mut self, new_values: &Vec<EntityValue>, prepend: bool, from_vanilla: bool) -> GazetteerParserResult<()> {
+
+        if from_vanilla {
+            // Remove the resolved values form the resolved_symbol_table
+            // Remove the resolved value from the resolved_value_to_tokens map
+            // remove the corresponding resolved value from the token_to_resolved_value map
+            // if after removing, a token is left absent from all resolved entities, then remove
+            // it from the tokens_count, tokens_to_resolved_value maps and from the
+            // tokens_symbol_table
+            let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
+            for val in &self.injected_values {
+                if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val)? {
+                    for res_val in res_val_indices {
+                        let (_, tokens) = self.get_tokens_from_resolved_value(&res_val)?.clone();
+                        self.resolved_value_to_tokens.remove(&res_val);
+                        for tok in tokens {
+                            self.token_to_resolved_values.entry(tok)
+                                .and_modify(|v| {v.remove(&res_val);});
+                            // Check the remaining resolved values containing the token
+                            if self.get_resolved_values_from_token(&tok)?.len() == 0 {
+                                tokens_marked_for_removal.insert(tok);
+                            }
+                        }
+                    }
+                }
+            }
+            for tok_idx in tokens_marked_for_removal {
+                let tok = self.tokens_symbol_table.find_index(&tok_idx)?;
+                if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok)? {
+                    for idx in tok_indices {
+                        self.token_to_resolved_values.remove(&idx);
+                        self.token_to_count.remove(&idx);
+                    }
+                }
+            }
+        }
+
         if prepend {
             // update rank of previous values
             let n_new_values = new_values.len() as u32;
@@ -278,6 +305,7 @@ impl Parser {
 
         for (rank, entity_value) in new_values.iter().enumerate() {
             self.add_value(entity_value, new_start_rank + rank as u32)?;
+            self.injected_values.insert(entity_value.resolved_value.clone());
         }
 
         // Update the stop words and edge cases
@@ -565,42 +593,6 @@ impl Parser {
 
         let reader = fs::File::open(folder_name.as_ref().join(config.parser_filename))?;
         Ok(from_read(reader)?)
-
-        //
-        // let tokens_symbol_table = GazetteerParserSymbolTable::from_path(
-        //     folder_name.as_ref().join(config.tokens_symbol_table_filename)
-        // )?;
-        //
-        // let resolved_symbol_table = GazetteerParserSymbolTable::from_path(
-        //     folder_name.as_ref().join(config.resolved_symbol_table_filename)
-        // )?;
-        //
-        // let token_to_res_val_path = folder_name.as_ref().join(config.token_to_resolved_values);
-        // let token_to_res_val_file = fs::File::open(&token_to_res_val_path)
-        //     .with_context(|_| format!("Cannot open metadata file {:?}", token_to_res_val_path))?;
-        // let token_to_resolved_values = from_read(token_to_res_val_file)?;
-        //
-        // let res_val_to_tokens_path = folder_name.as_ref().join(config.resolved_value_to_tokens);
-        // let res_val_to_tokens_file = fs::File::open(&res_val_to_tokens_path)
-        //     .with_context(|_| format!("Cannot open metadata file {:?}", res_val_to_tokens_path))?;
-        // let resolved_value_to_tokens = from_read(res_val_to_tokens_file)?;
-        //
-        // let token_to_count_path = folder_name.as_ref().join(config.token_to_count);
-        // let token_to_count_file = fs::File::open(&token_to_count_path)
-        //     .with_context(|_| format!("Cannot open metadata file {:?}", token_to_count_path))?;
-        // let token_to_count = from_read(token_to_count_file)?;
-        //
-        // let stop_words_path = folder_name.as_ref().join(config.stop_words);
-        // let stop_words_file = fs::File::open(&stop_words_path)
-        //     .with_context(|_| format!("Cannot open metadata file {:?}", stop_words_path))?;
-        // let stop_words = from_read(stop_words_file)?;
-        //
-        // let edge_cases_path = folder_name.as_ref().join(config.edge_cases);
-        // let edge_cases_file = fs::File::open(&edge_cases_path)
-        //     .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
-        // let edge_cases = from_read(edge_cases_file)?;
-        //
-        // Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases, n_stop_words: config.n_stop_words, additional_stop_words: config.additional_stop_words })
     }
 }
 
@@ -609,6 +601,7 @@ mod tests {
     extern crate tempfile;
     extern crate mio_httpc;
 
+    use std::time::{Instant};
     use self::mio_httpc::CallBuilder;
     use self::tempfile::tempdir;
     #[allow(unused_imports)]
@@ -1133,7 +1126,7 @@ mod tests {
         ];
 
         // Test with preprend set to false
-        parser.inject_new_values(&new_values, false).unwrap();
+        parser.inject_new_values(&new_values, false, false).unwrap();
         let parsed = parser
             .run("je veux écouter les flying stones", 0.6)
             .unwrap();
@@ -1160,7 +1153,7 @@ mod tests {
         );
 
         // Test with preprend set to true
-        parser.inject_new_values(&new_values, true).unwrap();
+        parser.inject_new_values(&new_values, true, false).unwrap();
         let parsed = parser
             .run("je veux écouter les flying stones", 0.6)
             .unwrap();
@@ -1185,6 +1178,68 @@ mod tests {
                 range: 16..26,
             }]
         );
+
+    }
+
+
+    #[test]
+    fn test_injection_from_vanilla() {
+
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let new_values_1 = vec![
+            EntityValue {
+                resolved_value: "The Flying Stones".to_string(),
+                raw_value: "the flying stones".to_string()
+            }
+        ];
+
+        parser.inject_new_values(&new_values_1, true, false).unwrap();
+
+        // Test injection from vanilla
+        let new_values_2 = vec![
+            EntityValue {
+                resolved_value: "Queens Of The Stone Age".to_string(),
+                raw_value: "queens of the stone age".to_string()
+            }
+        ];
+
+        let flying_idx = parser.tokens_symbol_table.find_single_symbol("flying").unwrap().unwrap();
+        let stones_idx = parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap();
+        let flying_stones_idx = parser.resolved_symbol_table.find_single_symbol("The Flying Stones").unwrap().unwrap();
+        parser.inject_new_values(&new_values_2, true, true).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![]
+        );
+
+        let parsed = parser
+            .run("je veux écouter queens the stone age", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "queens the stone age".to_string(),
+                resolved_value: "Queens Of The Stone Age".to_string(),
+                range: 16..36,
+            }]
+        );
+
+        assert_eq!(parser.resolved_symbol_table.find_symbol("The Flying Stones").unwrap(), None);
+        assert_eq!(parser.tokens_symbol_table.find_symbol("flying").unwrap(), None);
+        assert!(!parser.token_to_count.contains_key(&flying_idx));
+        assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
+        assert!(!parser.get_resolved_values_from_token(&stones_idx).unwrap().contains(&flying_stones_idx));
+        assert!(!parser.resolved_value_to_tokens.contains_key(&flying_stones_idx));
+
     }
 
     #[test]
@@ -1200,6 +1255,7 @@ mod tests {
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
         parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+        let mut parser_no_stop_words = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("the").unwrap().unwrap());
@@ -1223,7 +1279,7 @@ mod tests {
             }
         ];
 
-        parser.inject_new_values(&new_values, true).unwrap();
+        parser.inject_new_values(&new_values, true, false).unwrap();
 
         gt_stop_words.remove(&parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap());
         gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("rolling").unwrap().unwrap());
@@ -1233,6 +1289,10 @@ mod tests {
 
         assert_eq!(parser.stop_words, gt_stop_words);
         assert_eq!(parser.edge_cases, gt_edge_cases);
+
+        // No stop words case
+        assert!(parser_no_stop_words.stop_words.is_empty());
+        assert!(parser_no_stop_words.edge_cases.is_empty());
 
     }
 
@@ -1307,18 +1367,19 @@ mod tests {
     }
 
     #[test]
-    fn real_world_gazetteer() {
+    #[ignore]
+    fn real_world_gazetteer_parser() {
 
-        // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-        // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        // let gaz = Gazetteer{ data };
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let gaz = Gazetteer{ data };
         // DEBUG
-        let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
+        // let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
-        parser.dump("test_artist_parser").unwrap();
+        // parser.dump("test_artist_parser").unwrap();
         println!("N STOP WORDS {:?}", n_stop_words);
         println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
         println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
@@ -1346,14 +1407,14 @@ mod tests {
             }]
         );
 
-        // let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-        // let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        // let gaz = Gazetteer{ data };
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let gaz = Gazetteer{ data };
         // DEBUG
-        let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
+        // let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-        parser.dump("test_album_parser").unwrap();
+        // parser.dump("test_album_parser").unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
         println!("N STOP WORDS {:?}", n_stop_words);
@@ -1405,5 +1466,64 @@ mod tests {
                 range: 16..37,
             }]
         );
+    }
+
+
+    #[test]
+    #[ignore]
+    fn test_real_word_injection() {
+        // Real-world artist gazetteer
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let album_gaz = Gazetteer{ data };
+        // DEBUG
+        // let album_gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
+
+        let mut parser_for_test = Parser::from_gazetteer(&album_gaz).unwrap();
+        parser_for_test.set_stop_words(50, None).unwrap();
+        let mut parser = Parser::from_gazetteer(&album_gaz).unwrap();
+        parser.set_stop_words(50, None).unwrap();
+
+        // Get 10k values from the album gazetter to inject in the album parser
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        new_values.truncate(10000);
+        // DEBUG
+        // let file = fs::File::open("local_testing/album_gazetteer_formatted.json")
+        //     .with_context(|_| format!("Cannot open gazetter file {:?}", "local_testing/artist_gazetteer_formatted.json")).unwrap();
+        // let mut new_values: Vec<EntityValue> = serde_json::from_reader(file).unwrap();
+        // new_values.truncate(10000);
+
+        // Test injection
+        let parsed = parser_for_test
+            .run("je veux écouter hans knappertsbusch conducts", 0.7)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "hans knappertsbusch".to_string(),
+                resolved_value: "Hans Knappertsbusch".to_string(),
+                range: 16..35,
+            }]
+        );
+        parser_for_test.inject_new_values(&new_values, true, false).unwrap();
+        let parsed = parser_for_test
+            .run("je veux écouter hans knappertsbusch conducts", 0.7)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "hans knappertsbusch conducts".to_string(),
+                resolved_value: "Hans Knappertsbusch conducts".to_string(),
+                range: 16..44,
+            }]
+        );
+
+        let now = Instant::now();
+        parser.inject_new_values(&new_values, true, false).unwrap();
+        let total_time = now.elapsed().as_secs();
+        // DEBUG
+        // println!("TOTAL TIME {:?}", now.elapsed());
+        assert!(total_time < 10);
     }
 }
