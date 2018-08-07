@@ -23,7 +23,7 @@ use rmps::{Serializer, from_read};
 /// of a query that match entity values. The order in which the values are added to the parser
 /// matters: In case of ambiguity between two parsings, the Parser will output the value that was
 /// added first (see Gazetteer).
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
     resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resvoled values
@@ -35,21 +35,23 @@ pub struct Parser {
     n_stop_words: usize,  // number of stop words to extract from the entity data
     additional_stop_words: Vec<String>, // external list of stop words
     stop_words: HashSet<u32>,
-    edge_cases: HashSet<u32>  // values composed only of stop words
+    edge_cases: HashSet<u32>,  // values composed only of stop words
+    injected_values: HashSet<String>  // Keep track of values injected thus far
 }
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
-    tokens_symbol_table_filename: String,
-    resolved_symbol_table_filename: String,
+    // tokens_symbol_table_filename: String,
+    // resolved_symbol_table_filename: String,
     version: String,
-    token_to_resolved_values: String,
-    resolved_value_to_tokens: String,
-    token_to_count: String,
-    stop_words: String,
-    edge_cases: String,
-    n_stop_words: usize,
-    additional_stop_words: Vec<String>
+    parser_filename: String,
+    // token_to_resolved_values: String,
+    // resolved_value_to_tokens: String,
+    // token_to_count: String,
+    // stop_words: String,
+    // edge_cases: String,
+    // n_stop_words: usize,
+    // additional_stop_words: Vec<String>
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -125,7 +127,7 @@ impl Parser {
     /// Create an empty parser. Its symbol table contains the minimal symbols used during parsing.
     fn new() -> GazetteerParserResult<Parser> {
         Ok(Parser { tokens_symbol_table: GazetteerParserSymbolTable::new(),
-            resolved_symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default(), n_stop_words: 0, additional_stop_words: Vec::default() })
+            resolved_symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default(), n_stop_words: 0, additional_stop_words: Vec::default(), injected_values: HashSet::default() })
     }
 
     /// Add a single entity value to the parser. This function is kept private to promote
@@ -233,13 +235,13 @@ impl Parser {
 
     /// Get the set of stop words
     pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>> {
-        self.stop_words.iter().map(|idx| self.tokens_symbol_table.find_index(*idx)).collect()
+        self.stop_words.iter().map(|idx| self.tokens_symbol_table.find_index(idx)).collect()
     }
 
     /// Get the set of edge cases, containing only stop words
     pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>> {
         Ok(self.edge_cases.iter().map(|idx| {
-            self.resolved_symbol_table.find_index(*idx).unwrap()
+            self.resolved_symbol_table.find_index(idx).unwrap()
         }).collect())
     }
 
@@ -262,8 +264,8 @@ impl Parser {
         if prepend {
             // update rank of previous values
             let n_new_values = new_values.len() as u32;
-            for res_val in self.resolved_symbol_table.get_indices_range() {
-                self.resolved_value_to_tokens.entry(res_val)
+            for res_val in self.resolved_symbol_table.get_all_indices() {
+                self.resolved_value_to_tokens.entry(*res_val)
                     .and_modify(|(rank, _)| *rank += n_new_values);
             }
         }
@@ -515,7 +517,7 @@ impl Parser {
                 ParsedValue {
                     range: range_start..range_end,
                     raw_value: input.chars().skip(range_start).take(range_end - range_start).collect(),
-                    resolved_value: self.resolved_symbol_table.find_index(possible_match.resolved_value)?
+                    resolved_value: self.resolved_symbol_table.find_index(&possible_match.resolved_value)?
                 }
             );
             for idx in tokens_range_start..tokens_range_end {
@@ -530,18 +532,10 @@ impl Parser {
         Ok(parsing.into_sorted_vec())
     }
 
-    fn get_parser_config(&self) -> ParserConfig {
+    fn get_parser_config() -> ParserConfig {
         ParserConfig {
-            resolved_symbol_table_filename: RESOLVED_SYMBOLTABLE_FILENAME.to_string(),
-            tokens_symbol_table_filename: TOKENS_SYMBOLTABLE_FILENAME.to_string(),
+            parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            resolved_value_to_tokens: RESOLVED_VALUE_TO_TOKENS.to_string(),
-            token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string(),
-            token_to_count: TOKEN_TO_COUNT.to_string(),
-            stop_words: STOP_WORDS.to_string(),
-            edge_cases: EDGE_CASES.to_string(),
-            n_stop_words: self.n_stop_words,
-            additional_stop_words: self.additional_stop_words.clone()
         }
     }
 
@@ -553,37 +547,12 @@ impl Parser {
                 folder_name.as_ref()
             )
         })?;
-        let config = self.get_parser_config();
+        let config = Self::get_parser_config();
         let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
         serde_json::to_writer(writer, &config)?;
 
-        self.tokens_symbol_table.write_file(
-            folder_name.as_ref().join(config.tokens_symbol_table_filename)
-        )?;
-
-        self.resolved_symbol_table.write_file(
-            folder_name.as_ref().join(config.resolved_symbol_table_filename)
-        )?;
-
-        let mut token_to_res_val_writer = fs::File::create(folder_name.as_ref().join(config.token_to_resolved_values))?;
-        self.token_to_resolved_values.serialize(&mut Serializer::new(&mut token_to_res_val_writer))?;
-
-        let mut resolved_value_to_tokens_writer =
-        fs::File::create(folder_name.as_ref().join(config.resolved_value_to_tokens))?;
-        self.resolved_value_to_tokens.serialize(&mut Serializer::new(&mut resolved_value_to_tokens_writer))?;
-
-        let mut token_to_count_writer =
-        fs::File::create(folder_name.as_ref().join(config.token_to_count))?;
-        self.token_to_count.serialize(&mut Serializer::new(&mut token_to_count_writer))?;
-
-        let mut stop_words_writer =
-        fs::File::create(folder_name.as_ref().join(config.stop_words))?;
-        self.stop_words.serialize(&mut Serializer::new(&mut stop_words_writer))?;
-
-        let mut edge_cases_writer =
-        fs::File::create(folder_name.as_ref().join(config.edge_cases))?;
-        self.edge_cases.serialize(&mut Serializer::new(&mut edge_cases_writer))?;
-
+        let mut writer = fs::File::create(folder_name.as_ref().join(config.parser_filename))?;
+        self.serialize(&mut Serializer::new(&mut writer))?;
         Ok(())
     }
 
@@ -594,40 +563,44 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))?;
         let config: ParserConfig = serde_json::from_reader(metadata_file)?;
 
-        let tokens_symbol_table = GazetteerParserSymbolTable::from_path(
-            folder_name.as_ref().join(config.tokens_symbol_table_filename)
-        )?;
+        let reader = fs::File::open(folder_name.as_ref().join(config.parser_filename))?;
+        Ok(from_read(reader)?)
 
-        let resolved_symbol_table = GazetteerParserSymbolTable::from_path(
-            folder_name.as_ref().join(config.resolved_symbol_table_filename)
-        )?;
-
-        let token_to_res_val_path = folder_name.as_ref().join(config.token_to_resolved_values);
-        let token_to_res_val_file = fs::File::open(&token_to_res_val_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", token_to_res_val_path))?;
-        let token_to_resolved_values = from_read(token_to_res_val_file)?;
-
-        let res_val_to_tokens_path = folder_name.as_ref().join(config.resolved_value_to_tokens);
-        let res_val_to_tokens_file = fs::File::open(&res_val_to_tokens_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", res_val_to_tokens_path))?;
-        let resolved_value_to_tokens = from_read(res_val_to_tokens_file)?;
-
-        let token_to_count_path = folder_name.as_ref().join(config.token_to_count);
-        let token_to_count_file = fs::File::open(&token_to_count_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", token_to_count_path))?;
-        let token_to_count = from_read(token_to_count_file)?;
-
-        let stop_words_path = folder_name.as_ref().join(config.stop_words);
-        let stop_words_file = fs::File::open(&stop_words_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", stop_words_path))?;
-        let stop_words = from_read(stop_words_file)?;
-
-        let edge_cases_path = folder_name.as_ref().join(config.edge_cases);
-        let edge_cases_file = fs::File::open(&edge_cases_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
-        let edge_cases = from_read(edge_cases_file)?;
-
-        Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases, n_stop_words: config.n_stop_words, additional_stop_words: config.additional_stop_words })
+        //
+        // let tokens_symbol_table = GazetteerParserSymbolTable::from_path(
+        //     folder_name.as_ref().join(config.tokens_symbol_table_filename)
+        // )?;
+        //
+        // let resolved_symbol_table = GazetteerParserSymbolTable::from_path(
+        //     folder_name.as_ref().join(config.resolved_symbol_table_filename)
+        // )?;
+        //
+        // let token_to_res_val_path = folder_name.as_ref().join(config.token_to_resolved_values);
+        // let token_to_res_val_file = fs::File::open(&token_to_res_val_path)
+        //     .with_context(|_| format!("Cannot open metadata file {:?}", token_to_res_val_path))?;
+        // let token_to_resolved_values = from_read(token_to_res_val_file)?;
+        //
+        // let res_val_to_tokens_path = folder_name.as_ref().join(config.resolved_value_to_tokens);
+        // let res_val_to_tokens_file = fs::File::open(&res_val_to_tokens_path)
+        //     .with_context(|_| format!("Cannot open metadata file {:?}", res_val_to_tokens_path))?;
+        // let resolved_value_to_tokens = from_read(res_val_to_tokens_file)?;
+        //
+        // let token_to_count_path = folder_name.as_ref().join(config.token_to_count);
+        // let token_to_count_file = fs::File::open(&token_to_count_path)
+        //     .with_context(|_| format!("Cannot open metadata file {:?}", token_to_count_path))?;
+        // let token_to_count = from_read(token_to_count_file)?;
+        //
+        // let stop_words_path = folder_name.as_ref().join(config.stop_words);
+        // let stop_words_file = fs::File::open(&stop_words_path)
+        //     .with_context(|_| format!("Cannot open metadata file {:?}", stop_words_path))?;
+        // let stop_words = from_read(stop_words_file)?;
+        //
+        // let edge_cases_path = folder_name.as_ref().join(config.edge_cases);
+        // let edge_cases_file = fs::File::open(&edge_cases_path)
+        //     .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
+        // let edge_cases = from_read(edge_cases_file)?;
+        //
+        // Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases, n_stop_words: config.n_stop_words, additional_stop_words: config.additional_stop_words })
     }
 }
 
@@ -1345,6 +1318,7 @@ mod tests {
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
+        parser.dump("test_artist_parser").unwrap();
         println!("N STOP WORDS {:?}", n_stop_words);
         println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
         println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
@@ -1379,6 +1353,7 @@ mod tests {
         let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+        parser.dump("test_album_parser").unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
         println!("N STOP WORDS {:?}", n_stop_words);

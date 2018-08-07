@@ -2,27 +2,80 @@
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
 
+use serde::Deserializer;
+use serde::Serializer;
 use std::ops::Range;
 use std::path::Path;
 use errors::GazetteerParserResult;
 // use std::collections::{HashMap};
 use fnv::FnvHashMap as HashMap;
 use std::fs;
-use serde::{Serialize};
-use rmps::{Serializer, from_read};
+use serde::{Serialize, Deserialize};
+// use rmps::{Serializer, from_read};
 
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct GazetteerParserSymbolTable {
-    index_to_string: Vec<String>,
-    string_to_indices: HashMap<String, Vec<u32>>
+    // index_to_string: Vec<String>,
+    index_to_string: HashMap<u32, String>,
+    string_to_indices: HashMap<String, Vec<u32>>,
+    available_index: u32
 }
+
+/// We define another struct representing a serialized symbol table.
+/// This allows not serializing the two hashmaps but only one of them
+#[derive(Serialize, Deserialize)]
+struct SerializedGazetteerParserSymbolTable {
+    index_to_string: HashMap<u32, String>,
+    available_index: u32
+}
+
+impl Serialize for GazetteerParserSymbolTable {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Manually copy the index to string table
+        let mut index_to_string: HashMap<u32, String> = HashMap::with_capacity_and_hasher(self.index_to_string.len(), Default::default());
+        for (idx, val) in &self.index_to_string {
+            index_to_string.insert(*idx, val.to_string());
+        }
+        SerializedGazetteerParserSymbolTable {
+            index_to_string,
+            available_index: self.available_index
+        }.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GazetteerParserSymbolTable {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let serialized_symt = SerializedGazetteerParserSymbolTable::deserialize(deserializer)?;
+        // Recompute string_to_indices
+        let mut string_to_indices: HashMap<String, Vec<u32>> = HashMap::default();
+        for (idx, symbol) in &serialized_symt.index_to_string {
+            string_to_indices.entry(symbol.to_string())
+                .and_modify(|v| {v.push(*idx);})
+                .or_insert(vec![*idx]);
+        }
+
+        Ok(GazetteerParserSymbolTable {
+            index_to_string: serialized_symt.index_to_string,
+            string_to_indices,
+            available_index: serialized_symt.available_index
+        })
+
+    }
+}
+
 
 impl GazetteerParserSymbolTable {
     pub fn new() -> GazetteerParserSymbolTable {
-        let index_to_string = Vec::new();
+        let index_to_string = HashMap::default();
         let string_to_indices = HashMap::default();
-        GazetteerParserSymbolTable{index_to_string, string_to_indices }
+        GazetteerParserSymbolTable{ index_to_string, string_to_indices, available_index: 0 }
     }
 
     /// Add a new string symbol to the symbol table. The boolean force_add can be set to true to
@@ -31,14 +84,15 @@ impl GazetteerParserSymbolTable {
     /// already present several times in the symbol table
     pub fn add_symbol(&mut self, symbol: &str, force_add: bool) -> GazetteerParserResult<u32> {
         if force_add || !self.string_to_indices.contains_key(symbol) {
-            self.index_to_string.push(symbol.to_string());
-            let symbol_idx = (self.index_to_string.len() - 1) as u32;
+            let available_index = self.available_index;
+            self.index_to_string.insert(available_index, symbol.to_string());
             self.string_to_indices.entry(symbol.to_string())
-                .and_modify(|v| {v.push(symbol_idx);})
+                .and_modify(|v| {v.push(available_index);})
                 .or_insert({
-                    vec![symbol_idx]
+                    vec![available_index]
                 });
-            Ok(symbol_idx)
+            self.available_index += 1;
+            Ok(available_index)
         } else {
             let indices = self.string_to_indices.get(symbol)
                 .ok_or_else(|| format_err!("Symbol {:?} missing from symbol table",
@@ -55,9 +109,9 @@ impl GazetteerParserSymbolTable {
         self.string_to_indices.keys().collect()
     }
 
-    /// Get the range of the integer values used to reprent the symbols in the symbol table
-    pub fn get_indices_range(&self) -> Range<u32> {
-        0..self.index_to_string.len() as u32
+    /// Get a vec of all the integer values used to reprent the symbols in the symbol table
+    pub fn get_all_indices(&self) -> Vec<&u32> {
+        self.index_to_string.keys().collect()
     }
 
     /// Find the indices of a symbol in the symbol table.
@@ -78,29 +132,9 @@ impl GazetteerParserSymbolTable {
 
     /// Find the unique symbol corresponding to an index in the symbol table
     // #[inline(never)]
-    pub fn find_index(&self, idx: u32) -> GazetteerParserResult<String> {
-        let symb = self.index_to_string.get(idx as usize).ok_or_else(|| format_err!("Could not find index {:?} in the symbol table", idx))?;
+    pub fn find_index(&self, idx: &u32) -> GazetteerParserResult<String> {
+        let symb = self.index_to_string.get(idx).ok_or_else(|| format_err!("Could not find index {:?} in the symbol table", idx))?;
         Ok(symb.to_string())
-    }
-
-    /// The only part of the symbol table that is serialized is the index_to_string vec.
-    /// The converse hashmap is built upon loading
-    pub fn write_file<P: AsRef<Path>>(&self, filename: P) -> GazetteerParserResult<()> {
-        let mut writer = fs::File::create(filename)?;
-        self.index_to_string.serialize(&mut Serializer::new(&mut writer))?;
-        Ok(())
-    }
-
-    pub fn from_path<P: AsRef<Path>>(filename: P) -> GazetteerParserResult<GazetteerParserSymbolTable> {
-        let reader = fs::File::open(filename)?;
-        let index_to_string: Vec<String> = from_read(reader)?;
-        let mut string_to_indices: HashMap<String, Vec<u32>> = HashMap::default();
-        for (idx, symbol) in index_to_string.iter().enumerate() {
-            string_to_indices.entry(symbol.to_string())
-                .and_modify(|v| {v.push(idx as u32);})
-                .or_insert(vec![idx as u32]);
-        }
-        Ok(GazetteerParserSymbolTable{index_to_string, string_to_indices})
     }
 
 }
