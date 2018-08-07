@@ -23,6 +23,7 @@ use rmps::{Serializer, from_read};
 /// of a query that match entity values. The order in which the values are added to the parser
 /// matters: In case of ambiguity between two parsings, the Parser will output the value that was
 /// added first (see Gazetteer).
+#[derive(PartialEq, Eq, Debug)]
 pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
     resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resvoled values
@@ -31,6 +32,8 @@ pub struct Parser {
     token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
     token_to_resolved_values: HashMap<u32, HashSet<u32>>,  // maps token to set of resolved values containing token
     resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>,  // maps resolved value to a tuple (rank, tokens)
+    n_stop_words: usize,  // number of stop words to extract from the entity data
+    additional_stop_words: Vec<String>, // external list of stop words
     stop_words: HashSet<u32>,
     edge_cases: HashSet<u32>  // values composed only of stop words
 }
@@ -44,7 +47,9 @@ struct ParserConfig {
     resolved_value_to_tokens: String,
     token_to_count: String,
     stop_words: String,
-    edge_cases: String
+    edge_cases: String,
+    n_stop_words: usize,
+    additional_stop_words: Vec<String>
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -120,7 +125,7 @@ impl Parser {
     /// Create an empty parser. Its symbol table contains the minimal symbols used during parsing.
     fn new() -> GazetteerParserResult<Parser> {
         Ok(Parser { tokens_symbol_table: GazetteerParserSymbolTable::new(),
-            resolved_symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default() })
+            resolved_symbol_table: GazetteerParserSymbolTable::new(), token_to_resolved_values: HashMap::default(), resolved_value_to_tokens: HashMap::default(), token_to_count: HashMap::default(), stop_words: HashSet::default(), edge_cases: HashSet::default(), n_stop_words: 0, additional_stop_words: Vec::default() })
     }
 
     /// Add a single entity value to the parser. This function is kept private to promote
@@ -168,6 +173,7 @@ impl Parser {
     pub fn set_stop_words(&mut self, n_stop_words: usize, additional_stop_words: Option<Vec<&str>>) -> GazetteerParserResult<()> {
         // Update the set of stop words with the most frequent words in the gazetteer
         if n_stop_words > 0 {
+            self.n_stop_words = n_stop_words;
             let mut smallest_count: u32 = <u32>::max_value();
             let mut tok_with_smallest_count: u32 = 0;
             let mut largest_counts: HashMap<u32, u32> = HashMap::default();
@@ -201,6 +207,7 @@ impl Parser {
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table)
         if let Some(additional_stop_words_vec) = additional_stop_words {
+            self.additional_stop_words = additional_stop_words_vec.iter().map(|s| s.to_string()).collect();
             for tok_s in &additional_stop_words_vec {
                 let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
                 self.stop_words.insert(tok_idx);
@@ -216,6 +223,7 @@ impl Parser {
             }
             self.edge_cases.insert(*res_val);
         }
+
         Ok(())
     }
 
@@ -522,7 +530,9 @@ impl Parser {
             token_to_resolved_values: TOKEN_TO_RESOLVED_VALUES.to_string(),
             token_to_count: TOKEN_TO_COUNT.to_string(),
             stop_words: STOP_WORDS.to_string(),
-            edge_cases: EDGE_CASES.to_string()
+            edge_cases: EDGE_CASES.to_string(),
+            n_stop_words: self.n_stop_words,
+            additional_stop_words: self.additional_stop_words.clone()
         }
     }
 
@@ -608,7 +618,7 @@ impl Parser {
             .with_context(|_| format!("Cannot open metadata file {:?}", edge_cases_path))?;
         let edge_cases = from_read(edge_cases_file)?;
 
-        Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases })
+        Ok(Parser { tokens_symbol_table, resolved_symbol_table, token_to_resolved_values, resolved_value_to_tokens, token_to_count, stop_words, edge_cases, n_stop_words: config.n_stop_words, additional_stop_words: config.additional_stop_words })
     }
 }
 
@@ -641,25 +651,13 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.set_stop_words(2, None).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
 
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
 
-        // compare resolved_value_to_tokens
-        assert!(parser.resolved_value_to_tokens == reloaded_parser.resolved_value_to_tokens);
-        // compare token_to_resolved_values
-        assert!(parser.token_to_resolved_values == reloaded_parser.token_to_resolved_values);
-        // Compare symbol tables
-        assert!(parser.tokens_symbol_table == reloaded_parser.tokens_symbol_table);
-        assert!(parser.resolved_symbol_table == reloaded_parser.resolved_symbol_table);
-        // Compare token counts
-        assert!(parser.token_to_count == reloaded_parser.token_to_count);
-        // Compare stop words
-        assert!(parser.stop_words == reloaded_parser.stop_words);
-        // Compare edge cases
-        assert!(parser.edge_cases == reloaded_parser.edge_cases);
+        assert_eq!(parser, reloaded_parser)
     }
 
     #[test]

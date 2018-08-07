@@ -12,7 +12,7 @@ use serde::{Serialize};
 use rmps::{Serializer, from_read};
 
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct GazetteerParserSymbolTable {
     index_to_string: Vec<String>,
     string_to_indices: HashMap<String, Vec<u32>>
