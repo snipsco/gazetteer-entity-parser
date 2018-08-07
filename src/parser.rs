@@ -172,6 +172,8 @@ impl Parser {
     /// string.
     pub fn set_stop_words(&mut self, n_stop_words: usize, additional_stop_words: Option<Vec<&str>>) -> GazetteerParserResult<()> {
         // Update the set of stop words with the most frequent words in the gazetteer
+        // Reset stop words
+        self.stop_words = HashSet::default();
         if n_stop_words > 0 {
             self.n_stop_words = n_stop_words;
             let mut smallest_count: u32 = <u32>::max_value();
@@ -206,6 +208,8 @@ impl Parser {
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table)
+        // Reset edhe cases
+        self.edge_cases = HashSet::default();
         if let Some(additional_stop_words_vec) = additional_stop_words {
             self.additional_stop_words = additional_stop_words_vec.iter().map(|s| s.to_string()).collect();
             for tok_s in &additional_stop_words_vec {
@@ -273,6 +277,11 @@ impl Parser {
         for (rank, entity_value) in new_values.iter().enumerate() {
             self.add_value(entity_value, new_start_rank + rank as u32)?;
         }
+
+        // Update the stop words and edge cases
+        let n_stop_words = self.n_stop_words.clone();
+        let additional_stop_words = self.additional_stop_words.clone();
+        self.set_stop_words(n_stop_words, Some(additional_stop_words.iter().map(|s| s.as_str()).collect()))?;
 
         Ok(())
     }
@@ -1135,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn test_injection() {
+    fn test_injection_ranking() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
@@ -1205,6 +1214,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_injection_stop_words() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+
+        let mut gt_stop_words: HashSet<u32> = HashSet::default();
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("the").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("hello").unwrap().unwrap());
+
+        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
+        gt_edge_cases.insert(parser.resolved_symbol_table.find_single_symbol("The Stones").unwrap().unwrap());
+
+        assert_eq!(parser.stop_words, gt_stop_words);
+        assert_eq!(parser.edge_cases, gt_edge_cases);
+
+        let new_values = vec![
+            EntityValue {
+                resolved_value: "Rolling".to_string(),
+                raw_value: "rolling".to_string()
+            },
+            EntityValue {
+                resolved_value: "Rolling Two".to_string(),
+                raw_value: "rolling two".to_string()
+            }
+        ];
+
+        parser.inject_new_values(&new_values, true).unwrap();
+
+        gt_stop_words.remove(&parser.tokens_symbol_table.find_single_symbol("stones").unwrap().unwrap());
+        gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("rolling").unwrap().unwrap());
+
+        gt_edge_cases.remove(&parser.resolved_symbol_table.find_single_symbol("The Stones").unwrap().unwrap());
+        gt_edge_cases.insert(parser.resolved_symbol_table.find_single_symbol("Rolling").unwrap().unwrap());
+
+        assert_eq!(parser.stop_words, gt_stop_words);
+        assert_eq!(parser.edge_cases, gt_edge_cases);
+
+    }
 
     #[test]
     #[ignore]
