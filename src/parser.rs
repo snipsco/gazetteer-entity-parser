@@ -242,7 +242,34 @@ impl Parser {
         Ok(parser)
     }
 
-    /// get resolved value (DEBUG)
+    /// Add new values to an already trained Parser. This function is used for entity injection.
+    /// It takes as arguments a vector of EntityValue's to inject, and a boolean indicating
+    /// whether the new values should be prepended to the already existing values (`prepend=true`)
+    /// or appended (`prepend=false`)
+    pub fn inject_new_values(&mut self, new_values: &Vec<EntityValue>, prepend: bool) -> GazetteerParserResult<()> {
+        if prepend {
+            // update rank of previous values
+            let n_new_values = new_values.len() as u32;
+            for res_val in self.resolved_symbol_table.get_indices_range() {
+                self.resolved_value_to_tokens.entry(res_val)
+                    .and_modify(|(rank, _)| *rank += n_new_values);
+            }
+        }
+
+        let new_start_rank = match prepend {
+            true => 0, // we inject new values from rank 0 to n_new_values - 1
+            false => self.resolved_value_to_tokens.len()  // we inject new values from the current
+            // last rank onwards
+        } as u32;
+
+        for (rank, entity_value) in new_values.iter().enumerate() {
+            self.add_value(entity_value, new_start_rank + rank as u32)?;
+        }
+
+        Ok(())
+    }
+
+    /// get resolved value
     #[inline(never)]
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> GazetteerParserResult<&(u32, Vec<u32>)> {
         Ok(self.resolved_value_to_tokens.get(resolved_value).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", resolved_value))?)
@@ -1108,6 +1135,78 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn test_injection() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let new_values = vec![
+            EntityValue {
+                resolved_value: "The Flying Stones".to_string(),
+                raw_value: "the flying stones".to_string()
+            }
+        ];
+
+        // Test with preprend set to false
+        parser.inject_new_values(&new_values, false).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "flying stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 20..33,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter the stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 16..26,
+            }]
+        );
+
+        // Test with preprend set to true
+        parser.inject_new_values(&new_values, true).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "flying stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 20..33,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter the stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 16..26,
+            }]
+        );
+    }
+
 
     #[test]
     #[ignore]

@@ -2,6 +2,7 @@
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
 
+use std::ops::Range;
 use std::path::Path;
 use errors::GazetteerParserResult;
 // use std::collections::{HashMap};
@@ -47,6 +48,16 @@ impl GazetteerParserSymbolTable {
             }
             Ok(*indices.first().ok_or_else(|| format_err!("Symbol {:?} not mapped to any index in symbol table", symbol))?)
         }
+    }
+
+    /// Get a vec of all the values in the symbol table
+    pub fn get_all_symbols(&self) -> Vec<&String> {
+        self.string_to_indices.keys().collect()
+    }
+
+    /// Get the range of the integer values used to reprent the symbols in the symbol table
+    pub fn get_indices_range(&self) -> Range<u32> {
+        0..self.index_to_string.len() as u32
     }
 
     /// Find the indices of a symbol in the symbol table.
