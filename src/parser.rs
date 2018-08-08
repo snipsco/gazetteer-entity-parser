@@ -1,330 +1,708 @@
-use constants::RESTART_IDX;
-use constants::{EPS, EPS_IDX, METADATA_FILENAME, RESTART, SKIP, SKIP_IDX};
+use constants::*;
 use data::EntityValue;
 use data::Gazetteer;
 use errors::GazetteerParserResult;
 use failure::ResultExt;
+use fnv::FnvHashMap as HashMap;
+use fnv::FnvHashSet as HashSet;
+use rmps::{from_read, Serializer};
+use serde::Serialize;
 use serde_json;
-use snips_fst::string_paths_iterator::{StringPath, StringPathsIterator};
-use snips_fst::symbol_table::SymbolTable;
-use snips_fst::{fst, operations};
+use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
+use std::collections::BinaryHeap;
 use std::fs;
-use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
-use utils::whitespace_tokenizer;
-use utils::{check_threshold, fst_format_resolved_value, fst_unformat_resolved_value};
+use symbol_table::GazetteerParserSymbolTable;
+use utils::{check_threshold, whitespace_tokenizer};
 
-#[derive(Debug)]
-pub struct InternalEntityValue<'a> {
-    pub weight: f32,
-    pub resolved_value: &'a str,
-    pub raw_value: &'a str,
-}
-
-impl<'a> InternalEntityValue<'a> {
-    pub fn new(entity_value: &'a EntityValue, rank: usize) -> InternalEntityValue {
-        InternalEntityValue {
-            resolved_value: &entity_value.resolved_value,
-            raw_value: &entity_value.raw_value,
-            weight: 1.0 - 1.0 / (1.0 + rank as f32), // Adding 1 ensures rank is > 0
-        }
-    }
-}
-
-/// Struct representing the parser. The `fst` attribute holds the finite state transducer
-/// representing the logic of the transducer, and its symbol table is held by `symbol_table`.
-/// The Parser will match the longest possible contiguous substrings of a query that match entity
-/// values. The order in which the values are added to the parser matters: In case of ambiguity
-/// between two parsings, the Parser will output the value that was added first (see Gazetteer).
+/// Struct representing the parser. The Parser will match the longest possible contiguous
+/// substrings of a query that match partial entity values. The order in which the values are
+/// added to the parser matters: In case of ambiguity between two parsings, the Parser will output
+/// the value that was added first (see Gazetteer).
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub struct Parser {
-    fst: fst::Fst,
-    symbol_table: SymbolTable,
+    tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
+    resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resolved values
+    // The latter differs from the first one in that it can contain the same resolved value
+    // multiple times (to allow for multiple raw values corresponidng to the same resolved value)
+    token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
+    token_to_resolved_values: HashMap<u32, HashSet<u32>>, // maps token to set of resolved values containing token
+    resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>, // maps resolved value to a tuple (rank, tokens)
+    n_stop_words: usize, // number of stop words to extract from the entity data
+    additional_stop_words: Vec<String>, // external list of stop words
+    stop_words: HashSet<u32>,
+    edge_cases: HashSet<u32>,         // values composed only of stop words
+    injected_values: HashSet<String>, // Keep track of values injected thus far
 }
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
-    fst_filename: String,
-    symbol_table_filename: String,
     version: String,
+    parser_filename: String,
+}
+
+/// Struct holding a possible match that can be grown by iterating over the input tokens
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct PossibleMatch {
+    resolved_value: u32,
+    range: Range<usize>,
+    tokens_range: Range<usize>,
+    raw_value_length: u32,
+    n_consumed_tokens: u32,
+    last_token_in_input: usize,
+    last_token_in_resolution: usize,
+    rank: u32,
+}
+
+impl Ord for PossibleMatch {
+    fn cmp(&self, other: &PossibleMatch) -> Ordering {
+        if self.n_consumed_tokens < other.n_consumed_tokens {
+            Ordering::Less
+        } else if self.n_consumed_tokens > other.n_consumed_tokens {
+            Ordering::Greater
+        } else {
+            if self.raw_value_length < other.raw_value_length {
+                Ordering::Greater
+            } else if self.raw_value_length > other.raw_value_length {
+                Ordering::Less
+            } else {
+                other.rank.cmp(&self.rank)
+            }
+        }
+    }
+}
+
+impl PartialOrd for PossibleMatch {
+    fn partial_cmp(&self, other: &PossibleMatch) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
 /// will be a vector of ParsedValue. The `range` attribute is the range of the characters
 /// composing the raw value in the input query.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ParsedValue {
     pub resolved_value: String,
     pub range: Range<usize>, // character-level
     pub raw_value: String,
 }
 
+impl Ord for ParsedValue {
+    fn cmp(&self, other: &ParsedValue) -> Ordering {
+        match self.partial_cmp(other) {
+            Some(value) => value,
+            None => panic!("Parsed values are not comparable: {:?}, {:?}", self, other),
+        }
+    }
+}
+
+impl PartialOrd for ParsedValue {
+    fn partial_cmp(&self, other: &ParsedValue) -> Option<Ordering> {
+        if self.range.end < other.range.start {
+            Some(Ordering::Less)
+        } else if self.range.start > other.range.end {
+            Some(Ordering::Greater)
+        } else {
+            None
+        }
+    }
+}
+
 impl Parser {
-    /// Create an empty parser. Its FST has a single, start state, and it has minimal
-    /// symbol table.
-    fn new() -> GazetteerParserResult<Parser> {
-        // Add a FST with a single state and set it as start
-        let mut fst = fst::Fst::new();
-        let start_state = fst.add_state();
-        fst.set_start(start_state);
-        // Add a symbol table with epsilon and skip symbols
-        let mut symbol_table = SymbolTable::new();
-        let eps_idx = symbol_table.add_symbol(EPS)?;
-        if eps_idx != EPS_IDX {
-            return Err(format_err!("Wrong epsilon index: {}", eps_idx));
-        }
-        let skip_idx = symbol_table.add_symbol(SKIP)?;
-        if skip_idx != SKIP_IDX {
-            return Err(format_err!("Wrong skip index: {}", skip_idx));
-        }
-        let restart_idx = symbol_table.add_symbol(RESTART)?;
-        if restart_idx != RESTART_IDX {
-            return Err(format_err!("Wrong restart index: {}", skip_idx));
-        }
-        Ok(Parser { fst, symbol_table })
-    }
-
-    /// This function returns a FST that checks that at least one of the words in
-    /// `verbalized_value` is matched. This allows to disable many branches during the
-    /// composition. It returns the state at the output of the bottleneck. On the left, the
-    /// bottleneck is connected to the start state of the fst. Each token is consumed with weight
-    /// `weight_by_token` and is returned. The bottleneck starts by consuming a RESTART symbol or
-    /// nothing. The presence of the restart symbol allows forcing the parser to restart between
-    /// non-contiguous chunks of text (see `build_input_fst`).
-    fn make_bottleneck(
-        &mut self,
-        verbalized_value: &str,
-        weight_by_token: f32,
-    ) -> GazetteerParserResult<i32> {
-        let start_state = self.fst.start();
-        let current_head = self.fst.add_state();
-        self.fst
-            .add_arc(start_state, RESTART_IDX, EPS_IDX, 0.0, current_head);
-        self.fst
-            .add_arc(start_state, EPS_IDX, EPS_IDX, 0.0, current_head);
-        let next_head = self.fst.add_state();
-        for (_, token) in whitespace_tokenizer(verbalized_value) {
-            let token_idx = self.symbol_table.add_symbol(&token)?;
-            self.fst.add_arc(
-                current_head,
-                token_idx,
-                token_idx,
-                weight_by_token,
-                next_head,
-            );
-        }
-        Ok(next_head)
-    }
-
-    /// This function creates the transducer that maps a subset of the verbalized value onto
-    /// the resolved value.
-    fn make_value_transducer(
-        &mut self,
-        mut current_head: i32,
-        entity_value: &InternalEntityValue,
-        weight_by_token: f32,
-    ) -> GazetteerParserResult<()> {
-        let mut next_head: i32;
-        // First we consume the raw value
-        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            next_head = self.fst.add_state();
-            let token_idx = self.symbol_table.add_symbol(&token)?;
-            // Each arc can either consume a token, and output it...
-            self.fst
-                .add_arc(current_head, token_idx, token_idx, 0.0, next_head);
-            // Or skip the word, with a certain weight, outputting skip
-            self.fst
-                .add_arc(current_head, EPS_IDX, SKIP_IDX, weight_by_token, next_head);
-            // Update current head
-            current_head = next_head;
-        }
-        // Next we output the resolved value
-        next_head = self.fst.add_state();
-        // The symbol table cannot be deserialized if some symbols contain whitespaces. So we
-        // replace them with underscores.
-        let token_idx = self
-            .symbol_table
-            .add_symbol(&fst_format_resolved_value(&entity_value.resolved_value))?;
-        self.fst
-            .add_arc(current_head, EPS_IDX, token_idx, 0.0, next_head);
-        // Make current head final, with weight given by entity value
-        self.fst.set_final(next_head, entity_value.weight);
-        Ok(())
-    }
 
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
     /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &InternalEntityValue) -> GazetteerParserResult<()> {
-        // compute weight for each arc based on size of string
-        let weight_by_token = 1.0;
-        let current_head = self.make_bottleneck(&entity_value.raw_value, -weight_by_token)?;
-        self.make_value_transducer(current_head, &entity_value, weight_by_token)?;
+    fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
+        // We force add the new resolved value: even if it already is present in the symbol table
+        // we duplicate it to allow several raw values to map to it
+        let res_value_idx = self
+            .resolved_symbol_table
+            .add_symbol(&entity_value.resolved_value, true)?;
+
+        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
+            let token_idx = self.tokens_symbol_table.add_symbol(&token, false)?;
+
+            // Update token_to_resolved_values map
+            self.token_to_resolved_values
+                .entry(token_idx)
+                .and_modify(|e| {
+                    e.insert(res_value_idx);
+                })
+                .or_insert({
+                    let mut h = HashSet::default();
+                    h.insert(res_value_idx);
+                    h
+                });
+
+            // Update token count
+            self.token_to_count
+                .entry(token_idx)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+
+            // Update resolved_value_to_tokens map
+            self.resolved_value_to_tokens
+                .entry(res_value_idx)
+                .and_modify(|(_, v)| v.push(token_idx))
+                .or_insert((rank, vec![token_idx]));
+        }
         Ok(())
     }
 
+    /// Update an internal set of stop words and corresponding edge cases.
+    /// The set of stop words is made of the `n_stop_words` most frequent raw tokens in the
+    /// gazetteer used to generate the parser. An optional `additional_stop_words` vector of
+    /// strings can be added to the stop words. The edge cases are defined to the be the resolved
+    /// values whose raw value is composed only of stop words. There are examined seperately
+    /// during parsing, and will match if and only if they are present verbatim in the input
+    /// string.
+    pub fn set_stop_words(
+        &mut self,
+        n_stop_words: usize,
+        additional_stop_words: Option<Vec<&str>>,
+    ) -> GazetteerParserResult<()> {
+        // Update the set of stop words with the most frequent words in the gazetteer
+        // Reset stop words
+        self.stop_words = HashSet::default();
+        if n_stop_words > 0 {
+            self.n_stop_words = n_stop_words;
+            let mut smallest_count: u32 = <u32>::max_value();
+            let mut tok_with_smallest_count: u32 = 0;
+            let mut largest_counts: HashMap<u32, u32> = HashMap::default();
+            for (token, count) in &self.token_to_count {
+                if self.stop_words.len() < n_stop_words {
+                    self.stop_words.insert(*token);
+                    largest_counts.insert(*token, *count);
+                    if count < &smallest_count {
+                        smallest_count = *count;
+                        tok_with_smallest_count = *token;
+                    }
+                } else {
+                    if count > &smallest_count {
+                        self.stop_words.remove(&tok_with_smallest_count);
+                        largest_counts.remove(&tok_with_smallest_count);
+                        self.stop_words.insert(*token);
+                        largest_counts.insert(*token, *count);
+                        smallest_count = *count;
+                        tok_with_smallest_count = *token;
+                        for (prev_tok, prev_count) in &largest_counts {
+                            if prev_count < &smallest_count {
+                                smallest_count = *prev_count;
+                                tok_with_smallest_count = *prev_tok;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // add the words from the `additional_stop_words` vec (and potentially add them to
+        // the symbol table)
+        // Reset edhe cases
+        self.edge_cases = HashSet::default();
+        if let Some(additional_stop_words_vec) = additional_stop_words {
+            self.additional_stop_words = additional_stop_words_vec
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            for tok_s in &additional_stop_words_vec {
+                let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
+                self.stop_words.insert(tok_idx);
+            }
+        }
+
+        // Update the set of edge_cases. i.e. resolved value that only contain stop words
+        'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
+            for tok in tokens {
+                if !(self.stop_words.contains(tok)) {
+                    continue 'outer;
+                }
+            }
+            self.edge_cases.insert(*res_val);
+        }
+
+        Ok(())
+    }
+
+    /// Get the set of stop words
+    pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>> {
+        self.stop_words
+            .iter()
+            .map(|idx| self.tokens_symbol_table.find_index(idx))
+            .collect()
+    }
+
+    /// Get the set of edge cases, containing only stop words
+    pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>> {
+        Ok(self
+            .edge_cases
+            .iter()
+            .map(|idx| self.resolved_symbol_table.find_index(idx).unwrap())
+            .collect())
+    }
+
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
-    /// This function adds the entity values from the gazetteer
-    /// and performs several optimizations on the resulting FST. This is the recommended method
+    /// This function adds the entity values from the gazetteer. This is the recommended method
     /// to define a parser.
     pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
-        let mut parser = Parser::new()?;
+        let mut parser = Parser::default();
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            parser.add_value(&InternalEntityValue::new(entity_value, rank))?;
+            parser.add_value(entity_value, rank as u32)?;
         }
-        parser.fst.optimize();
-        parser.fst.closure_plus();
-        parser.fst.arc_sort(true);
         Ok(parser)
     }
 
-    /// Create an input fst from a string to be parsed. Outputs the input fst and a vec of ranges
-    // of the tokens composing it
-    fn build_input_fst(&self, input: &str) -> GazetteerParserResult<(fst::Fst, Vec<Range<usize>>)> {
-        // build the input fst
-        let mut input_fst = fst::Fst::new();
-        let mut tokens_ranges: Vec<Range<usize>> = vec![];
-        let mut current_head = input_fst.add_state();
-        input_fst.set_start(current_head);
-        let mut restart_to_be_inserted: bool = false;
-        for (token_range, token) in whitespace_tokenizer(input) {
-            match self.symbol_table.find_symbol(&token)? {
-                Some(value) => {
-                    if !restart_to_be_inserted {
-                        let next_head = input_fst.add_state();
-                        input_fst.add_arc(current_head, EPS_IDX, RESTART_IDX, 0.0, next_head);
-                        current_head = next_head;
-                        restart_to_be_inserted = true;
+    /// Add new values to an already trained Parser. This function is used for entity injection.
+    /// It takes as arguments a vector of EntityValue's to inject, and a boolean indicating
+    /// whether the new values should be prepended to the already existing values (`prepend=true`)
+    /// or appended (`prepend=false`). Setting `from_vanilla` to true allows to remove all
+    /// previously injected values before adding the new ones.
+    pub fn inject_new_values(
+        &mut self,
+        new_values: &Vec<EntityValue>,
+        prepend: bool,
+        from_vanilla: bool,
+    ) -> GazetteerParserResult<()> {
+        if from_vanilla {
+            // Remove the resolved values form the resolved_symbol_table
+            // Remove the resolved value from the resolved_value_to_tokens map
+            // remove the corresponding resolved value from the token_to_resolved_value map
+            // if after removing, a token is left absent from all resolved entities, then remove
+            // it from the tokens_count, tokens_to_resolved_value maps and from the
+            // tokens_symbol_table
+            let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
+            for val in &self.injected_values {
+                if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val)? {
+                    for res_val in res_val_indices {
+                        let (_, tokens) = self.get_tokens_from_resolved_value(&res_val)?.clone();
+                        self.resolved_value_to_tokens.remove(&res_val);
+                        for tok in tokens {
+                            self.token_to_resolved_values.entry(tok).and_modify(|v| {
+                                v.remove(&res_val);
+                            });
+                            // Check the remaining resolved values containing the token
+                            if self.get_resolved_values_from_token(&tok)?.is_empty() {
+                                tokens_marked_for_removal.insert(tok);
+                            }
+                        }
                     }
-                    let next_head = input_fst.add_state();
-                    input_fst.add_arc(current_head, value, value, 0.0, next_head);
-                    tokens_ranges.push(token_range);
-                    current_head = next_head;
                 }
-                None => {
-                    restart_to_be_inserted = false;
-                    // if the word is not in the symbol table, there is no
-                    // chance of matching it: we skip
-                    continue;
+            }
+            for tok_idx in tokens_marked_for_removal {
+                let tok = self.tokens_symbol_table.find_index(&tok_idx)?;
+                if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok)? {
+                    for idx in tok_indices {
+                        self.token_to_resolved_values.remove(&idx);
+                        self.token_to_count.remove(&idx);
+                    }
                 }
             }
         }
-        // Set final state
-        input_fst.set_final(current_head, 0.0);
-        input_fst.optimize();
-        input_fst.arc_sort(false);
-        Ok((input_fst, tokens_ranges))
+
+        if prepend {
+            // update rank of previous values
+            let n_new_values = new_values.len() as u32;
+            for res_val in self.resolved_symbol_table.get_all_indices() {
+                self.resolved_value_to_tokens
+                    .entry(*res_val)
+                    .and_modify(|(rank, _)| *rank += n_new_values);
+            }
+        }
+
+        let new_start_rank = match prepend {
+            true => 0, // we inject new values from rank 0 to n_new_values - 1
+            false => self.resolved_value_to_tokens.len(), // we inject new values from the current
+                        // last rank onwards
+        } as u32;
+
+        for (rank, entity_value) in new_values.iter().enumerate() {
+            self.add_value(entity_value, new_start_rank + rank as u32)?;
+            self.injected_values
+                .insert(entity_value.resolved_value.clone());
+        }
+
+        // Update the stop words and edge cases
+        let n_stop_words = self.n_stop_words.clone();
+        let additional_stop_words = self.additional_stop_words.clone();
+        self.set_stop_words(
+            n_stop_words,
+            Some(additional_stop_words.iter().map(|s| s.as_str()).collect()),
+        )?;
+
+        Ok(())
     }
 
-    /// Decode the single shortest path
-    fn decode_shortest_path(
+    /// get resolved value
+    fn get_tokens_from_resolved_value(
         &self,
-        shortest_path: &fst::Fst,
-        tokens_range: &Vec<Range<usize>>,
-        decoding_threshold: f32,
-    ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let mut path_iterator = StringPathsIterator::new(
-            &shortest_path,
-            &self.symbol_table,
-            &self.symbol_table,
-            true,
-            true,
-        );
-
-        let path = path_iterator
-            .next()
-            .unwrap_or_else(|| Err(format_err!("Empty string path iterator")))?;
-        Ok(Parser::format_string_path(
-            &path,
-            &tokens_range,
-            decoding_threshold,
-        )?)
+        resolved_value: &u32,
+    ) -> GazetteerParserResult<&(u32, Vec<u32>)> {
+        Ok(self
+            .resolved_value_to_tokens
+            .get(resolved_value)
+            .ok_or_else(|| {
+                format_err!(
+                    "Missing value {:?} from resolved_value_to_tokens",
+                    resolved_value
+                )
+            })?)
     }
 
-    /// Format the shortest path as a vec of ParsedValue
-    fn format_string_path(
-        string_path: &StringPath,
-        tokens_range: &Vec<Range<usize>>,
+    /// get resolved values from token
+    fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>> {
+        Ok(self
+            .token_to_resolved_values
+            .get(token)
+            .ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
+    }
+
+    /// Find all possible matches in a string.
+    /// Returns a hashmap, indexed by resolved values. The corresponding value is a vec of tuples
+    /// each tuple is a possible match for the resolved value, and is made of
+    // (range of match, number of skips, index of last matched token in the resolved value)
+    fn find_possible_matches(
+        &self,
+        input: &str,
         threshold: f32,
-    ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let mut input_iterator = whitespace_tokenizer(&string_path.istring);
-        let mut parsed_values: Vec<ParsedValue> = vec![];
-        let mut input_value_until_now: Vec<String> = vec![];
-        let mut current_ranges: Vec<&Range<usize>> = vec![];
-        let mut advance_input = false;
-        let (_, mut current_input_token) = input_iterator
-            .next()
-            .ok_or_else(|| format_err!("Empty input string"))?;
-        let mut current_input_token_idx: usize = 0;
-        let mut n_skips: usize = 0;
-        for (_, token) in whitespace_tokenizer(&string_path.ostring) {
-            if token == SKIP {
-                n_skips += 1;
-                continue;
-            }
-            if advance_input {
-                if let Some((_, value)) = input_iterator.next() {
-                    current_input_token = value;
-                    current_input_token_idx += 1;
+    ) -> GazetteerParserResult<BinaryHeap<PossibleMatch>> {
+        let mut possible_matches: HashMap<u32, PossibleMatch> =
+            HashMap::with_capacity_and_hasher(1000, Default::default());
+        let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
+        let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
+        'outer: for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
+            let range_start = range.start;
+            let range_end = range.end;
+            match self.tokens_symbol_table.find_single_symbol(&token)? {
+                Some(value) => {
+                    if !self.stop_words.contains(&value) {
+                        for res_val in self.get_resolved_values_from_token(&value)? {
+                            let entry = possible_matches.entry(*res_val);
+                            match entry {
+                                Entry::Occupied(mut entry) => self.update_previous_match(
+                                    &mut *entry.get_mut(),
+                                    res_val,
+                                    token_idx,
+                                    value,
+                                    range_start,
+                                    range_end,
+                                    threshold,
+                                    &mut matches_heap,
+                                ),
+                                Entry::Vacant(entry) => {
+                                    if let Some(new_possible_match) = self
+                                        .insert_new_possible_match(
+                                            res_val,
+                                            value,
+                                            range_start,
+                                            range_end,
+                                            token_idx,
+                                            threshold,
+                                            &skipped_tokens,
+                                        )? {
+                                        entry.insert(new_possible_match);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        skipped_tokens.insert(token_idx, (range_start..range_end, value));
+                        // Iterate over all edge cases and try to add or update corresponding
+                        // PossibleMatch's. Using a threshold of 1.
+                        let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
+                        for res_val in &self.edge_cases {
+                            if res_vals_from_token.contains(&res_val) {
+                                let entry = possible_matches.entry(*res_val);
+                                match entry {
+                                    Entry::Occupied(mut entry) => self.update_previous_match(
+                                        &mut *entry.get_mut(),
+                                        res_val,
+                                        token_idx,
+                                        value,
+                                        range_start,
+                                        range_end,
+                                        1.0,
+                                        &mut matches_heap,
+                                    ),
+                                    Entry::Vacant(entry) => {
+                                        if let Some(new_possible_match) = self
+                                            .insert_new_possible_match(
+                                                res_val,
+                                                value,
+                                                range_start,
+                                                range_end,
+                                                token_idx,
+                                                1.0,
+                                                &skipped_tokens,
+                                            )? {
+                                            entry.insert(new_possible_match);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Iterate over current possible matches containing the stop word and
+                        // try to grow them (but do not initiate a new possible match)
+                        // Threshold depends on whether the res_val is a edge case of not
+                        for (res_val, mut possible_match) in &mut possible_matches {
+                            if res_vals_from_token.contains(res_val) {
+                                let val_threshold = match self
+                                    .edge_cases
+                                    .contains(&possible_match.resolved_value)
+                                {
+                                    false => threshold,
+                                    true => 1.0,
+                                };
+                                self.update_previous_match(
+                                    &mut possible_match,
+                                    res_val,
+                                    token_idx,
+                                    value,
+                                    range_start,
+                                    range_end,
+                                    val_threshold,
+                                    &mut matches_heap,
+                                )
+                            }
+                        }
+                    }
                 }
-            }
-            if current_input_token != token {
-                let range_start = current_ranges.first().unwrap().start;
-                let range_end = current_ranges.last().unwrap().end;
-                if check_threshold(input_value_until_now.len(), n_skips, threshold) {
-                    parsed_values.push(ParsedValue {
-                        raw_value: input_value_until_now.join(" "),
-                        resolved_value: fst_unformat_resolved_value(&token),
-                        range: range_start..range_end,
-                    });
-                }
-                // Reinitialize accumulators
-                n_skips = 0;
-                input_value_until_now.clear();
-                current_ranges.clear();
-                advance_input = false;
-            } else {
-                input_value_until_now.push(token);
-                current_ranges.push(
-                    tokens_range
-                        .get(current_input_token_idx)
-                        .ok_or_else(|| format_err!("Decoding went wrong"))?,
-                );
-                advance_input = true;
+                None => continue,
             }
         }
-        Ok(parsed_values)
+
+        // Add to the heap the possible matches that remain
+        for possible_match in possible_matches.values() {
+            // We start by adding the PossibleMatch to the heap
+            if possible_match.n_consumed_tokens > possible_match.raw_value_length {
+                bail!(
+                    "Consumed more tokens than are available: {:?}",
+                    possible_match
+                )
+            }
+            // In case the resolved value is an edge case, we set the threshold to 1 for this
+            // value
+            let val_threshold = match self.edge_cases.contains(&possible_match.resolved_value) {
+                false => threshold,
+                true => 1.0,
+            };
+            if check_threshold(
+                possible_match.n_consumed_tokens,
+                possible_match.raw_value_length - possible_match.n_consumed_tokens,
+                val_threshold,
+            ) {
+                matches_heap.push(possible_match.clone());
+            }
+        }
+
+        Ok(matches_heap)
+    }
+
+    fn update_previous_match(
+        &self,
+        possible_match: &mut PossibleMatch,
+        res_val: &u32,
+        token_idx: usize,
+        value: u32,
+        range_start: usize,
+        range_end: usize,
+        threshold: f32,
+        ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
+    ) {
+        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+        {
+            if possible_match.resolved_value == *res_val
+                && token_idx == possible_match.last_token_in_input + 1
+            {
+                // Grow the last Possible Match
+                // Find the next token in the resolved value that matches the
+                // input token
+                for otoken_idx in possible_match.last_token_in_resolution + 1..otokens.len() {
+                    let otok = otokens[otoken_idx];
+                    if value == otok {
+                        possible_match.range.end = range_end;
+                        possible_match.n_consumed_tokens += 1;
+                        possible_match.last_token_in_input = token_idx;
+                        possible_match.last_token_in_resolution = otoken_idx;
+                        possible_match.tokens_range.end += 1;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // the token belongs to a new resolved value, or the previous
+        // PossibleMatch cannot be grown further. We start a new
+        // PossibleMatch
+
+        if possible_match.n_consumed_tokens > possible_match.raw_value_length {
+            panic!(
+                "Consumed more tokens than are available: {:?}",
+                possible_match
+            )
+        }
+
+        if check_threshold(
+            possible_match.n_consumed_tokens,
+            possible_match.raw_value_length - possible_match.n_consumed_tokens,
+            threshold,
+        ) {
+            matches_heap.push(possible_match.clone());
+        }
+        // Then we initialize a new PossibleMatch with the same res val
+        let last_token_in_resolution = otokens
+            .iter()
+            .position(|e| *e == value)
+            .ok_or_else(|| format_err!("Tokens list should contain value but doesn't"))
+            .unwrap();
+        *possible_match = PossibleMatch {
+            resolved_value: *res_val,
+            range: range_start..range_end,
+            tokens_range: token_idx..(token_idx + 1),
+            raw_value_length: otokens.len() as u32,
+            last_token_in_input: token_idx,
+            last_token_in_resolution,
+            n_consumed_tokens: 1,
+            rank: *rank,
+        };
+    }
+
+    /// when we insert a new possible match, we need to backtrack to check if the value did not
+    /// start with some stop words
+    fn insert_new_possible_match(
+        &self,
+        res_val: &u32,
+        value: u32,
+        range_start: usize,
+        range_end: usize,
+        token_idx: usize,
+        threshold: f32,
+        skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
+    ) -> GazetteerParserResult<Option<PossibleMatch>> {
+        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+        let last_token_in_resolution = otokens
+            .iter()
+            .position(|e| *e == value)
+            .ok_or_else(|| format_err!("Tokens list should contain value but doesn't"))
+            .unwrap();
+
+        let mut possible_match = PossibleMatch {
+            resolved_value: *res_val,
+            range: range_start..range_end,
+            tokens_range: token_idx..(token_idx + 1),
+            last_token_in_input: token_idx,
+            last_token_in_resolution,
+            n_consumed_tokens: 1,
+            raw_value_length: otokens.len() as u32,
+            rank: *rank,
+        };
+        let mut n_skips = last_token_in_resolution as u32;
+
+        // Bactrack to check if we left out from skipped words at the beginning
+        'outer: for btok_idx in (0..token_idx).rev() {
+            if skipped_tokens.contains_key(&btok_idx) {
+                let (skip_range, skip_tok) = skipped_tokens.get(&btok_idx).unwrap();
+                match otokens.iter().position(|e| *e == *skip_tok) {
+                    Some(idx) => {
+                        if idx < possible_match.last_token_in_resolution {
+                            possible_match.range.start = skip_range.start;
+                            possible_match.tokens_range.start = btok_idx;
+                            possible_match.n_consumed_tokens += 1;
+                            n_skips -= 1;
+                        } else {
+                            break 'outer;
+                        }
+                    }
+                    None => break 'outer,
+                }
+            } else {
+                break 'outer;
+            }
+        }
+
+        // Conservative estimate of threshold condition for early stopping
+        // if we have already skipped more tokens than is permitted by the threshold condition,
+        // there is no point in continuing
+        if possible_match.raw_value_length < n_skips {
+            bail!("Skipped more tokens than are available: error")
+        }
+        if check_threshold(
+            possible_match.raw_value_length - n_skips,
+            n_skips,
+            threshold,
+        ) {
+            Ok(Some(possible_match))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`. `decoding_threshold` is
-    /// the minimum fraction of words to match for an entity to be parsed.
+    /// the minimum fraction of raw tokens to match for an entity to be parsed.
     pub fn run(
         &self,
         input: &str,
         decoding_threshold: f32,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let (input_fst, tokens_range) = self.build_input_fst(input)?;
-        // Compose with the parser fst
-        let composition = operations::compose(&input_fst, &self.fst);
-        if composition.num_states() == 0 {
-            return Ok(vec![]);
-        }
-        let shortest_path = composition.shortest_path(1, false, false);
-
-        let parsing = self.decode_shortest_path(&shortest_path, &tokens_range, decoding_threshold)?;
-
+        let matches_heap = self.find_possible_matches(input, decoding_threshold)?;
+        let parsing = self.parse_input(input, matches_heap)?;
         Ok(parsing)
     }
 
-    fn get_parser_config(&self) -> ParserConfig {
+    fn parse_input(
+        &self,
+        input: &str,
+        matches_heap: BinaryHeap<PossibleMatch>,
+    ) -> GazetteerParserResult<Vec<ParsedValue>> {
+        let mut taken_tokens: HashSet<usize> = HashSet::default();
+        let n_total_tokens = whitespace_tokenizer(input).count();
+        let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
+
+        'outer: for possible_match in matches_heap.into_sorted_vec().iter().rev() {
+            let tokens_range_start = possible_match.tokens_range.start;
+            let tokens_range_end = possible_match.tokens_range.end;
+            for tok_idx in tokens_range_start..tokens_range_end {
+                if taken_tokens.contains(&tok_idx) {
+                    continue 'outer;
+                }
+            }
+
+            let range_start = possible_match.range.start;
+            let range_end = possible_match.range.end;
+            parsing.push(ParsedValue {
+                range: range_start..range_end,
+                raw_value: input
+                    .chars()
+                    .skip(range_start)
+                    .take(range_end - range_start)
+                    .collect(),
+                resolved_value: self
+                    .resolved_symbol_table
+                    .find_index(&possible_match.resolved_value)?,
+            });
+            for idx in tokens_range_start..tokens_range_end {
+                taken_tokens.insert(idx);
+            }
+            if taken_tokens.len() == n_total_tokens {
+                break;
+            }
+        }
+
+        // Output ordered parsing
+        Ok(parsing.into_sorted_vec())
+    }
+
+    fn get_parser_config() -> ParserConfig {
         ParserConfig {
-            fst_filename: "fst".to_string(),
-            symbol_table_filename: "symbol_table".to_string(),
+            parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 
-    /// Dump the resolver to a folder
+    /// Dump the parser to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<()> {
         fs::create_dir(folder_name.as_ref()).with_context(|_| {
             format!(
@@ -332,16 +710,12 @@ impl Parser {
                 folder_name.as_ref()
             )
         })?;
-        let config = self.get_parser_config();
-        let config_string = serde_json::to_string(&config)?;
-        let mut buffer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
-        buffer.write(config_string.as_bytes())?;
-        self.fst
-            .write_file(folder_name.as_ref().join(config.fst_filename))?;
-        self.symbol_table.write_file(
-            folder_name.as_ref().join(config.symbol_table_filename),
-            true,
-        )?;
+        let config = Self::get_parser_config();
+        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
+        serde_json::to_writer(writer, &config)?;
+
+        let mut writer = fs::File::create(folder_name.as_ref().join(config.parser_filename))?;
+        self.serialize(&mut Serializer::new(&mut writer))?;
         Ok(())
     }
 
@@ -351,24 +725,24 @@ impl Parser {
         let metadata_file = fs::File::open(&metadata_path)
             .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))?;
         let config: ParserConfig = serde_json::from_reader(metadata_file)?;
-        let fst = fst::Fst::from_path(folder_name.as_ref().join(config.fst_filename))?;
-        let symbol_table = SymbolTable::from_path(
-            folder_name.as_ref().join(config.symbol_table_filename),
-            true,
-        )?;
-        Ok(Parser { fst, symbol_table })
+
+        let reader = fs::File::open(folder_name.as_ref().join(config.parser_filename))?;
+        Ok(from_read(reader)?)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate mio_httpc;
     extern crate tempfile;
 
+    use self::mio_httpc::CallBuilder;
     use self::tempfile::tempdir;
     #[allow(unused_imports)]
     use super::*;
     #[allow(unused_imports)]
     use data::EntityValue;
+    use std::time::Instant;
 
     #[test]
     fn test_seralization_deserialization() {
@@ -382,15 +756,131 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
         tdir.close().unwrap();
-        assert!(parser.fst.equals(&reloaded_parser.fst));
+
+        assert_eq!(parser, reloaded_parser)
     }
 
     #[test]
-    fn test_parser() {
+    fn test_stop_words_and_edge_cases() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones Rolling".to_string(),
+            raw_value: "the stones rolling".to_string(),
+        });
+
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+
+        let mut gt_stop_words: HashSet<u32> = HashSet::default();
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("the")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("stones")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("hello")
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(parser.stop_words == gt_stop_words);
+        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
+        gt_edge_cases.insert(
+            parser
+                .resolved_symbol_table
+                .find_single_symbol("The Stones")
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(parser.edge_cases == gt_edge_cases);
+
+        // Value starting with a stop word
+        let parsed = parser.run("je veux écouter les the rolling", 0.6).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 20..31,
+            }]
+        );
+
+        // Value starting with a stop word and ending with one
+        let parsed = parser
+            .run("je veux écouter les the rolling stones", 1.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 20..38,
+            }]
+        );
+
+        // Value starting with two stop words
+        let parsed = parser
+            .run("je veux écouter les the stones rolling", 1.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones rolling".to_string(),
+                resolved_value: "The Stones Rolling".to_string(),
+                range: 20..38,
+            }]
+        );
+
+        // Edge case
+        let parsed = parser.run("je veux écouter les the stones", 1.0).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: "The Stones".to_string(),
+                range: 20..30,
+            }]
+        );
+
+        // Edge case should not match if not present in full
+        let parsed = parser.run("je veux écouter les the", 0.5).unwrap();
+        assert_eq!(parsed, vec![]);
+    }
+
+    #[test]
+    fn test_parser_base() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -466,8 +956,52 @@ mod tests {
                 },
             ]
         );
+
         parsed = parser.run("joue moi quelque chose", 0.0).unwrap();
         assert_eq!(parsed, vec![]);
+    }
+
+    #[test]
+    fn test_parser_multiple_raw_values() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink one eight two".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink 182".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let mut parsed = parser.run("let's listen to blink 182", 0.0).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "blink 182".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                range: 16..25,
+            }]
+        );
+
+        parsed = parser.run("let's listen to blink", 0.5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "blink".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                range: 16..21,
+            }]
+        );
+
+        parsed = parser.run("let's listen to blink one two", 0.5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "blink one two".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                range: 16..29,
+            }]
+        );
     }
 
     #[test]
@@ -498,7 +1032,7 @@ mod tests {
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        /* When there is a tie in terms of number of token matched, match the most popular choice */
+        // When there is a tie in terms of number of token matched, match the most popular choice
         let parsed = parser.run("je veux écouter the stones", 0.5).unwrap();
         assert_eq!(
             parsed,
@@ -577,7 +1111,7 @@ mod tests {
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "Quand est-ce ?".to_string(),
+                resolved_value: "Quand est-ce ?".to_string(),
                 range: 4..13,
                 raw_value: "quand est".to_string(),
             }]
@@ -585,7 +1119,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_parser_with_mixed_ordered_entity() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
@@ -595,7 +1128,14 @@ mod tests {
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let parsed = parser.run("rolling the stones", 0.5).unwrap();
-        assert_eq!(parsed, vec![]);
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 8..18,
+                raw_value: "the stones".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -622,6 +1162,7 @@ mod tests {
             raw_value: "les enfoirés".to_string(),
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
         let parsed = parser
             .run("je veux écouter les rolling stones", 0.5)
             .unwrap();
@@ -676,5 +1217,477 @@ mod tests {
                 range: 20..34,
             }]
         );
+    }
+
+    #[test]
+    fn test_repeated_words() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let parsed = parser.run("the the the", 0.5).unwrap();
+        assert_eq!(parsed, vec![]);
+
+        let parsed = parser
+            .run("the the the rolling stones stones stones stones", 1.0)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 8..26,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_injection_ranking() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let new_values = vec![EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        }];
+
+        // Test with preprend set to false
+        parser.inject_new_values(&new_values, false, false).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "flying stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 20..33,
+            }]
+        );
+        let parsed = parser.run("je veux écouter the stones", 0.6).unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 16..26,
+            }]
+        );
+
+        // Test with preprend set to true
+        parser.inject_new_values(&new_values, true, false).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "flying stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 20..33,
+            }]
+        );
+        let parsed = parser.run("je veux écouter the stones", 0.6).unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: "The Flying Stones".to_string(),
+                range: 16..26,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_injection_from_vanilla() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let new_values_1 = vec![EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        }];
+
+        parser
+            .inject_new_values(&new_values_1, true, false)
+            .unwrap();
+
+        // Test injection from vanilla
+        let new_values_2 = vec![EntityValue {
+            resolved_value: "Queens Of The Stone Age".to_string(),
+            raw_value: "queens of the stone age".to_string(),
+        }];
+
+        let flying_idx = parser
+            .tokens_symbol_table
+            .find_single_symbol("flying")
+            .unwrap()
+            .unwrap();
+        let stones_idx = parser
+            .tokens_symbol_table
+            .find_single_symbol("stones")
+            .unwrap()
+            .unwrap();
+        let flying_stones_idx = parser
+            .resolved_symbol_table
+            .find_single_symbol("The Flying Stones")
+            .unwrap()
+            .unwrap();
+        parser.inject_new_values(&new_values_2, true, true).unwrap();
+        let parsed = parser
+            .run("je veux écouter les flying stones", 0.6)
+            .unwrap();
+        assert_eq!(parsed, vec![]);
+
+        let parsed = parser
+            .run("je veux écouter queens the stone age", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "queens the stone age".to_string(),
+                resolved_value: "Queens Of The Stone Age".to_string(),
+                range: 16..36,
+            }]
+        );
+
+        assert_eq!(
+            parser
+                .resolved_symbol_table
+                .find_symbol("The Flying Stones")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            parser.tokens_symbol_table.find_symbol("flying").unwrap(),
+            None
+        );
+        assert!(!parser.token_to_count.contains_key(&flying_idx));
+        assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
+        assert!(
+            !parser
+                .get_resolved_values_from_token(&stones_idx)
+                .unwrap()
+                .contains(&flying_stones_idx)
+        );
+        assert!(
+            !parser
+                .resolved_value_to_tokens
+                .contains_key(&flying_stones_idx)
+        );
+    }
+
+    #[test]
+    fn test_injection_stop_words() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "The Rolling Stones".to_string(),
+            raw_value: "the rolling stones".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Stones".to_string(),
+            raw_value: "the stones".to_string(),
+        });
+        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+        let parser_no_stop_words = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let mut gt_stop_words: HashSet<u32> = HashSet::default();
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("the")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("stones")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("hello")
+                .unwrap()
+                .unwrap(),
+        );
+
+        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
+        gt_edge_cases.insert(
+            parser
+                .resolved_symbol_table
+                .find_single_symbol("The Stones")
+                .unwrap()
+                .unwrap(),
+        );
+
+        assert_eq!(parser.stop_words, gt_stop_words);
+        assert_eq!(parser.edge_cases, gt_edge_cases);
+
+        let new_values = vec![
+            EntityValue {
+                resolved_value: "Rolling".to_string(),
+                raw_value: "rolling".to_string(),
+            },
+            EntityValue {
+                resolved_value: "Rolling Two".to_string(),
+                raw_value: "rolling two".to_string(),
+            },
+        ];
+
+        parser.inject_new_values(&new_values, true, false).unwrap();
+
+        gt_stop_words.remove(
+            &parser
+                .tokens_symbol_table
+                .find_single_symbol("stones")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_stop_words.insert(
+            parser
+                .tokens_symbol_table
+                .find_single_symbol("rolling")
+                .unwrap()
+                .unwrap(),
+        );
+
+        gt_edge_cases.remove(
+            &parser
+                .resolved_symbol_table
+                .find_single_symbol("The Stones")
+                .unwrap()
+                .unwrap(),
+        );
+        gt_edge_cases.insert(
+            parser
+                .resolved_symbol_table
+                .find_single_symbol("Rolling")
+                .unwrap()
+                .unwrap(),
+        );
+
+        assert_eq!(parser.stop_words, gt_stop_words);
+        assert_eq!(parser.edge_cases, gt_edge_cases);
+
+        // No stop words case
+        assert!(parser_no_stop_words.stop_words.is_empty());
+        assert!(parser_no_stop_words.edge_cases.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_match_longest_substring() {
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "Black And White".to_string(),
+            raw_value: "black and white".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Album".to_string(),
+            raw_value: "album".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "The Black and White Album".to_string(),
+            raw_value: "the black and white album".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "1 2 3 4".to_string(),
+            raw_value: "one two three four".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "3 4 5 6".to_string(),
+            raw_value: "three four five six".to_string(),
+        });
+        let parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let parsed = parser
+            .run("je veux écouter le black and white album", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "black and white album".to_string(),
+                resolved_value: "The Black and White Album".to_string(),
+                range: 19..40,
+            }]
+        );
+
+        let parsed = parser.run("one two three four", 0.5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "one two three four".to_string(),
+                resolved_value: "1 2 3 4".to_string(),
+                range: 0..18,
+            }]
+        );
+
+        // This last test is ambiguous and there may be several acceptable answers...
+        let parsed = parser.run("one two three four five six", 0.5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "one two".to_string(),
+                    resolved_value: "1 2 3 4".to_string(),
+                    range: 0..7,
+                },
+                ParsedValue {
+                    raw_value: "three four five six".to_string(),
+                    resolved_value: "3 4 5 6".to_string(),
+                    range: 8..27,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn real_world_gazetteer_parser() {
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let gaz = Gazetteer { data };
+
+        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+        let n_stop_words = 50;
+        parser.set_stop_words(n_stop_words, None).unwrap();
+
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 20..34,
+            }]
+        );
+        let parsed = parser.run("je veux écouter bowie", 0.5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "bowie".to_string(),
+                resolved_value: "David Bowie".to_string(),
+                range: 16..21,
+            }]
+        );
+
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let gaz = Gazetteer { data };
+
+        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
+        let n_stop_words = 50;
+        parser.set_stop_words(n_stop_words, None).unwrap();
+
+        let parsed = parser
+            .run("je veux écouter le black and white album", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "black and white album".to_string(),
+                resolved_value: "The Black and White Album".to_string(),
+                range: 19..40,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter dark side of the moon", 0.6)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "dark side of the moon".to_string(),
+                resolved_value: "Dark Side of the Moon".to_string(),
+                range: 16..37,
+            }]
+        );
+        let parsed = parser
+            .run("je veux écouter dark side of the moon", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "je veux".to_string(),
+                    resolved_value: "Je veux du bonheur".to_string(),
+                    range: 0..7,
+                },
+                ParsedValue {
+                    raw_value: "dark side of the moon".to_string(),
+                    resolved_value: "Dark Side of the Moon".to_string(),
+                    range: 16..37,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_real_word_injection() {
+        // Real-world artist gazetteer
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        let album_gaz = Gazetteer { data };
+
+        let mut parser_for_test = Parser::from_gazetteer(&album_gaz).unwrap();
+        parser_for_test.set_stop_words(50, None).unwrap();
+        let mut parser = Parser::from_gazetteer(&album_gaz).unwrap();
+        parser.set_stop_words(50, None).unwrap();
+
+        // Get 10k values from the album gazetter to inject in the album parser
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
+        new_values.truncate(10000);
+
+        // Test injection
+        let parsed = parser_for_test
+            .run("je veux écouter hans knappertsbusch conducts", 0.7)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "hans knappertsbusch".to_string(),
+                resolved_value: "Hans Knappertsbusch".to_string(),
+                range: 16..35,
+            }]
+        );
+        parser_for_test
+            .inject_new_values(&new_values, true, false)
+            .unwrap();
+        let parsed = parser_for_test
+            .run("je veux écouter hans knappertsbusch conducts", 0.7)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "hans knappertsbusch conducts".to_string(),
+                resolved_value: "Hans Knappertsbusch conducts".to_string(),
+                range: 16..44,
+            }]
+        );
+
+        let now = Instant::now();
+        parser.inject_new_values(&new_values, true, false).unwrap();
+        let total_time = now.elapsed().as_secs();
+        assert!(total_time < 10);
     }
 }
