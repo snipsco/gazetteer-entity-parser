@@ -69,7 +69,6 @@ impl Ord for PossibleMatch {
             } else if self.raw_value_length > other.raw_value_length {
                 Ordering::Less
             } else {
-                // println!("Using rank to compare {:?} and {:?}", self, other);
                 other.rank.cmp(&self.rank)
             }
         }
@@ -358,7 +357,7 @@ impl Parser {
                     } else {
                         skipped_tokens.insert(token_idx, (range_start..range_end, value));
                         // Iterate over all edge cases and try to add or update corresponding
-                        // PossibleMatch's
+                        // PossibleMatch's. Using a threshold of 1.
                         let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
                         for res_val in &self.edge_cases {
                             if res_vals_from_token.contains(&res_val) {
@@ -375,9 +374,14 @@ impl Parser {
                         }
                         // Iterate over current possible matches containing the stop word and
                         // try to grow them (but do not initiate a new possible match)
+                        // Threshold depends on whether the res_val is a edge case of not
                         for (res_val, mut possible_match) in &mut possible_matches {
                             if res_vals_from_token.contains(res_val) {
-                                self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, threshold, &mut matches_heap)
+                                let val_threshold = match self.edge_cases.contains(&possible_match.resolved_value) {
+                                    false => threshold,
+                                    true => 1.0
+                                };
+                                self.update_previous_match(&mut possible_match, res_val, token_idx, value, range_start, range_end, val_threshold, &mut matches_heap)
                             }
                         }
                     }
@@ -406,8 +410,6 @@ impl Parser {
         Ok(matches_heap)
     }
 
-
-    #[inline(never)]
     fn update_previous_match(&self, possible_match: &mut PossibleMatch, res_val: &u32, token_idx: usize, value: u32, range_start: usize, range_end: usize, threshold: f32, ref mut matches_heap: &mut BinaryHeap<PossibleMatch>) {
 
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
@@ -437,7 +439,7 @@ impl Parser {
         if possible_match.n_consumed_tokens > possible_match.raw_value_length {
             panic!("Consumed more tokens than are available: {:?}", possible_match)
         }
-        // println!("CHECKING THRESHOLD FOR {:?}", possible_match);
+
         if check_threshold(possible_match.n_consumed_tokens, possible_match.raw_value_length - possible_match.n_consumed_tokens, threshold) {
             matches_heap.push(possible_match.clone());
         }
@@ -457,7 +459,6 @@ impl Parser {
 
     /// when we insert a new possible match, we need to backtrack to check if the value did not
     /// start with some stop words
-    #[inline(never)]
     fn insert_new_possible_match(&self, res_val: &u32, value: u32, range_start: usize, range_end: usize, token_idx: usize, threshold: f32, skipped_tokens: &HashMap<usize, (Range<usize>, u32)>) -> GazetteerParserResult<Option<PossibleMatch>> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| format_err!("Tokens list should contain value but doesn't")).unwrap();
@@ -476,7 +477,6 @@ impl Parser {
 
         // Bactrack to check if we left out from skipped words at the beginning
         'outer: for btok_idx in (0..token_idx).rev() {
-            // println!("BACKTRACKING {:?} STEPS", btok_idx);
             if skipped_tokens.contains_key(&btok_idx) {
                 let (skip_range, skip_tok) = skipped_tokens.get(&btok_idx).unwrap();
                 match otokens.iter().position(|e| *e == *skip_tok) {
@@ -498,6 +498,8 @@ impl Parser {
         }
 
         // Conservative estimate of threshold condition for early stopping
+        // if we have already skipped more tokens than is permitted by the threshold condition,
+        // there is no point in continuing
         if possible_match.raw_value_length < n_skips {
             bail!("Skipped more tokens than are available: error")
         }
@@ -511,7 +513,6 @@ impl Parser {
 
     /// Parse the input string `input` and output a vec of `ParsedValue`. `decoding_threshold` is
     /// the minimum fraction of raw tokens to match for an entity to be parsed.
-    #[inline(never)]
     pub fn run(
         &self,
         input: &str,
@@ -523,7 +524,6 @@ impl Parser {
         Ok(parsing)
     }
 
-    #[inline(never)]
     fn parse_input(&self, input: &str, matches_heap: BinaryHeap<PossibleMatch>) -> GazetteerParserResult<Vec<ParsedValue>> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
@@ -727,6 +727,15 @@ mod tests {
             ]
         );
 
+        // Edge case should not match if not present in full
+        let parsed = parser
+            .run("je veux écouter les the", 0.5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![]
+        );
+
 
     }
 
@@ -750,7 +759,7 @@ mod tests {
             raw_value: "je suis animal".to_string(),
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        // parser.dump("test_new_parser").unwrap();
+
         let mut parsed = parser
             .run("je veux écouter les rolling stones", 0.0)
             .unwrap();
@@ -896,7 +905,7 @@ mod tests {
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        /* When there is a tie in terms of number of token matched, match the most popular choice */
+        // When there is a tie in terms of number of token matched, match the most popular choice
         let parsed = parser.run("je veux écouter the stones", 0.5).unwrap();
         assert_eq!(
             parsed,
@@ -1025,7 +1034,7 @@ mod tests {
             raw_value: "les enfoirés".to_string(),
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        // parser.dump("test_new_parser").unwrap();
+
         let parsed = parser
             .run("je veux écouter les rolling stones", 0.5)
             .unwrap();
@@ -1091,10 +1100,10 @@ mod tests {
         });
         let parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        // let parsed = parser
-        //     .run("the the the", 0.5)
-        //     .unwrap();
-        // assert_eq!(parsed, vec![]);
+        let parsed = parser
+            .run("the the the", 0.5)
+            .unwrap();
+        assert_eq!(parsed, vec![]);
 
         let parsed = parser
             .run("the the the rolling stones stones stones stones", 1.0)
@@ -1255,7 +1264,7 @@ mod tests {
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
         parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
-        let mut parser_no_stop_words = Parser::from_gazetteer(&gazetteer).unwrap();
+        let parser_no_stop_words = Parser::from_gazetteer(&gazetteer).unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(parser.tokens_symbol_table.find_single_symbol("the").unwrap().unwrap());
@@ -1367,22 +1376,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn real_world_gazetteer_parser() {
 
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer{ data };
-        // DEBUG
-        // let gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
-        // parser.dump("test_artist_parser").unwrap();
-        println!("N STOP WORDS {:?}", n_stop_words);
-        println!("ARTIST GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
-        println!("ARTIST GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
 
         let parsed = parser
             .run("je veux écouter les rolling stones", 0.6)
@@ -1410,22 +1412,10 @@ mod tests {
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer{ data };
-        // DEBUG
-        // let gaz = Gazetteer::from_json("local_testing/album_gazetteer_formatted.json", None).unwrap();
 
         let mut parser = Parser::from_gazetteer(&gaz).unwrap();
-        // parser.dump("test_album_parser").unwrap();
         let n_stop_words = 50;
         parser.set_stop_words(n_stop_words, None).unwrap();
-        println!("N STOP WORDS {:?}", n_stop_words);
-        println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.get_stop_words());
-        println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.get_edge_cases());
-        // println!("FRACTION {:?}", fraction);
-        // println!("ALBUM GAZETTEER, STOP WORDS {:?}", parser.stop_words.len());
-        // println!("ALBUM GAZETTEER, EDGE CASES {:?}", parser.edge_cases.len());
-        // println!("STOP WORDS {:?}", parser.get_stop_words().unwrap());
-        // println!("EDGE CASES WORDS {:?}", parser.get_edge_cases().unwrap());
-        //
 
         let parsed = parser
             .run("je veux écouter le black and white album", 0.6)
@@ -1470,14 +1460,11 @@ mod tests {
 
 
     #[test]
-    #[ignore]
     fn test_real_word_injection() {
         // Real-world artist gazetteer
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer{ data };
-        // DEBUG
-        // let album_gaz = Gazetteer::from_json("local_testing/artist_gazetteer_formatted.json", None).unwrap();
 
         let mut parser_for_test = Parser::from_gazetteer(&album_gaz).unwrap();
         parser_for_test.set_stop_words(50, None).unwrap();
@@ -1488,11 +1475,6 @@ mod tests {
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
         let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         new_values.truncate(10000);
-        // DEBUG
-        // let file = fs::File::open("local_testing/album_gazetteer_formatted.json")
-        //     .with_context(|_| format!("Cannot open gazetter file {:?}", "local_testing/artist_gazetteer_formatted.json")).unwrap();
-        // let mut new_values: Vec<EntityValue> = serde_json::from_reader(file).unwrap();
-        // new_values.truncate(10000);
 
         // Test injection
         let parsed = parser_for_test
@@ -1522,8 +1504,6 @@ mod tests {
         let now = Instant::now();
         parser.inject_new_values(&new_values, true, false).unwrap();
         let total_time = now.elapsed().as_secs();
-        // DEBUG
-        // println!("TOTAL TIME {:?}", now.elapsed());
         assert!(total_time < 10);
     }
 }

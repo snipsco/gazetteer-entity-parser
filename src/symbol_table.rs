@@ -4,26 +4,19 @@
 
 use serde::Deserializer;
 use serde::Serializer;
-use std::ops::Range;
-use std::path::Path;
 use errors::GazetteerParserResult;
-// use std::collections::{HashMap};
 use fnv::FnvHashMap as HashMap;
-use std::fs;
 use serde::{Serialize, Deserialize};
-// use rmps::{Serializer, from_read};
-
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct GazetteerParserSymbolTable {
-    // index_to_string: Vec<String>,
     index_to_string: HashMap<u32, String>,
     string_to_indices: HashMap<String, Vec<u32>>,
     available_index: u32
 }
 
 /// We define another struct representing a serialized symbol table.
-/// This allows not serializing the two hashmaps but only one of them
+/// This allows not serializing the two hashmaps but only one of them, to save space
 #[derive(Serialize, Deserialize)]
 struct SerializedGazetteerParserSymbolTable {
     index_to_string: HashMap<u32, String>,
@@ -69,7 +62,6 @@ impl<'de> Deserialize<'de> for GazetteerParserSymbolTable {
 
     }
 }
-
 
 impl GazetteerParserSymbolTable {
     pub fn new() -> GazetteerParserSymbolTable {
@@ -121,7 +113,7 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Get a vec of all the values in the symbol table
-    pub fn get_all_symbols(&self) -> Vec<&String> {
+    pub fn _get_all_symbols(&self) -> Vec<&String> {
         self.string_to_indices.keys().collect()
     }
 
@@ -136,7 +128,6 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Find the unique index of a symbol, and raise an error if it has more than one index
-    // #[inline(never)]
     pub fn find_single_symbol(&self, symbol: &str) -> GazetteerParserResult<Option<u32>> {
         match self.find_symbol(symbol)? {
             Some(vec) if vec.len() == 1 => {Ok(Some(*vec.first().unwrap()))}
@@ -147,7 +138,6 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Find the unique symbol corresponding to an index in the symbol table
-    // #[inline(never)]
     pub fn find_index(&self, idx: &u32) -> GazetteerParserResult<String> {
         let symb = self.index_to_string.get(idx).ok_or_else(|| format_err!("Could not find index {:?} in the symbol table", idx))?;
         Ok(symb.to_string())
