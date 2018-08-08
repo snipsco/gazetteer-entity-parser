@@ -24,9 +24,9 @@ use utils::{check_threshold, whitespace_tokenizer};
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
-    resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resvoled values
+    resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resolved values
     // The latter differs from the first one in that it can contain the same resolved value
-    // multiple times (to allow for multiple raw values corresponidng to the same resvoled value)
+    // multiple times (to allow for multiple raw values corresponidng to the same resolved value)
     token_to_count: HashMap<u32, u32>, // maps each token to its count in the dataset
     token_to_resolved_values: HashMap<u32, HashSet<u32>>, // maps token to set of resolved values containing token
     resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>, // maps resolved value to a tuple (rank, tokens)
@@ -94,7 +94,7 @@ impl Ord for ParsedValue {
     fn cmp(&self, other: &ParsedValue) -> Ordering {
         match self.partial_cmp(other) {
             Some(value) => value,
-            None => panic!("Parsed value are not comaparable: {:?}, {:?}", self, other),
+            None => panic!("Parsed values are not comparable: {:?}, {:?}", self, other),
         }
     }
 }
@@ -122,9 +122,7 @@ impl Parser {
         let res_value_idx = self
             .resolved_symbol_table
             .add_symbol(&entity_value.resolved_value, true)?;
-        // if self.resolved_value_to_tokens.contains_key(&res_value_idx) {
-        //     bail!("Cannot add value {:?} twice to the parser");
-        // }
+
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
             let token_idx = self.tokens_symbol_table.add_symbol(&token, false)?;
 
@@ -287,7 +285,7 @@ impl Parser {
                                 v.remove(&res_val);
                             });
                             // Check the remaining resolved values containing the token
-                            if self.get_resolved_values_from_token(&tok)?.len() == 0 {
+                            if self.get_resolved_values_from_token(&tok)?.is_empty() {
                                 tokens_marked_for_removal.insert(tok);
                             }
                         }
@@ -363,8 +361,8 @@ impl Parser {
     }
 
     /// Find all possible matches in a string.
-    /// Returns a hashmap, indexed by resvolved values. The corresponding value is a vec of tuples
-    /// each tuple is a possible match for the resvoled value, and is made of
+    /// Returns a hashmap, indexed by resolved values. The corresponding value is a vec of tuples
+    /// each tuple is a possible match for the resolved value, and is made of
     // (range of match, number of skips, index of last matched token in the resolved value)
     fn find_possible_matches(
         &self,
