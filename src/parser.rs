@@ -21,7 +21,7 @@ use utils::{check_threshold, whitespace_tokenizer};
 /// substrings of a query that match partial entity values. The order in which the values are
 /// added to the parser matters: In case of ambiguity between two parsings, the Parser will output
 /// the value that was added first (see Gazetteer).
-#[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable, // Symbol table for the raw tokens
     resolved_symbol_table: GazetteerParserSymbolTable, // Symbol table for the resvoled values
@@ -112,21 +112,6 @@ impl PartialOrd for ParsedValue {
 }
 
 impl Parser {
-    /// Create an empty parser. Its symbol table contains the minimal symbols used during parsing.
-    fn new() -> GazetteerParserResult<Parser> {
-        Ok(Parser {
-            tokens_symbol_table: GazetteerParserSymbolTable::new(),
-            resolved_symbol_table: GazetteerParserSymbolTable::new(),
-            token_to_resolved_values: HashMap::default(),
-            resolved_value_to_tokens: HashMap::default(),
-            token_to_count: HashMap::default(),
-            stop_words: HashSet::default(),
-            edge_cases: HashSet::default(),
-            n_stop_words: 0,
-            additional_stop_words: Vec::default(),
-            injected_values: HashSet::default(),
-        })
-    }
 
     /// Add a single entity value to the parser. This function is kept private to promote
     /// creating the parser with a higher level function (such as `from_gazetteer`) that
@@ -266,7 +251,7 @@ impl Parser {
     /// This function adds the entity values from the gazetteer. This is the recommended method
     /// to define a parser.
     pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
-        let mut parser = Parser::new()?;
+        let mut parser = Parser::default();
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(entity_value, rank as u32)?;
         }

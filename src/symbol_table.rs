@@ -7,7 +7,7 @@ use serde::Deserializer;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Default)]
 pub struct GazetteerParserSymbolTable {
     index_to_string: HashMap<u32, String>,
     string_to_indices: HashMap<String, Vec<u32>>,
@@ -66,15 +66,6 @@ impl<'de> Deserialize<'de> for GazetteerParserSymbolTable {
 }
 
 impl GazetteerParserSymbolTable {
-    pub fn new() -> GazetteerParserSymbolTable {
-        let index_to_string = HashMap::default();
-        let string_to_indices = HashMap::default();
-        GazetteerParserSymbolTable {
-            index_to_string,
-            string_to_indices,
-            available_index: 0,
-        }
-    }
 
     /// Add a new string symbol to the symbol table. The boolean force_add can be set to true to
     /// force adding the value once more, even though it may already be in the symbol table
