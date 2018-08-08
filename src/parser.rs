@@ -316,13 +316,11 @@ impl Parser {
     }
 
     /// get resolved value
-    #[inline(never)]
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> GazetteerParserResult<&(u32, Vec<u32>)> {
         Ok(self.resolved_value_to_tokens.get(resolved_value).ok_or_else(|| format_err!("Missing value {:?} from resolved_value_to_tokens", resolved_value))?)
     }
 
     /// get resolved values from token
-    #[inline(never)]
     fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>> {
         Ok(self.token_to_resolved_values.get(token).ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
     }
@@ -331,7 +329,6 @@ impl Parser {
     /// Returns a hashmap, indexed by resvolved values. The corresponding value is a vec of tuples
     /// each tuple is a possible match for the resvoled value, and is made of
     // (range of match, number of skips, index of last matched token in the resolved value)
-    #[inline(never)]
     fn find_possible_matches(&self, input: &str, threshold: f32) -> GazetteerParserResult<BinaryHeap<PossibleMatch>> {
         let mut possible_matches: HashMap<u32, PossibleMatch> = HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();

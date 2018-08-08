@@ -3,7 +3,6 @@ use std::ops::Range;
 use std::str::Chars;
 
 /// Check whether the best parsing matches the threshold condition or not
-#[inline(never)]
 pub fn check_threshold(n_decoded: u32, n_skips: u32, threshold: f32) -> bool {
     (n_decoded as f32) / (n_decoded as f32 + n_skips as f32) >= threshold
 }
@@ -15,7 +14,6 @@ pub struct WhitespaceTokenizer<'a> {
 }
 
 /// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
-#[inline(never)]
 pub fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
     WhitespaceTokenizer {
         char_iterator: string.chars().peekable(),
