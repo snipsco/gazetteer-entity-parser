@@ -1,27 +1,10 @@
-use constants::RESOLVED_SYMBOL;
-use constants::SPACE_SYMBOL;
 use std::iter::Peekable;
 use std::ops::Range;
 use std::str::Chars;
 
-/// This function formats the resolved value output by the parser fst, removing all
-/// whitespaces. Its inverse is fst_unformat_resolved_value.
-pub fn fst_format_resolved_value(string: &str) -> String {
-    format!("{}:{}", RESOLVED_SYMBOL, string.replace(" ", SPACE_SYMBOL))
-}
-
-/// This function is the inverse of fst_format_resolved_value. It formats the output of the parser fst to return the resolved value
-pub fn fst_unformat_resolved_value(string: &str) -> String {
-    string
-        .replace(&format!("{}:", RESOLVED_SYMBOL), "")
-        .replace(SPACE_SYMBOL, " ")
-}
-
 /// Check whether the best parsing matches the threshold condition or not
-pub fn check_threshold(n_decoded: usize, n_skips: usize, threshold: f32) -> bool {
-    // we use n_skip - 1 because the bottleneck takes away one good token
-    // that ends uo being skipped
-    (n_decoded as f32) / (n_decoded as f32 + n_skips as f32 - 1.0) >= threshold
+pub fn check_threshold(n_decoded: u32, n_skips: u32, threshold: f32) -> bool {
+    (n_decoded as f32) / (n_decoded as f32 + n_skips as f32) >= threshold
 }
 
 #[derive(Debug)]
@@ -77,15 +60,6 @@ impl<'a> Iterator for WhitespaceTokenizer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fst_format_works() {
-        for sample in vec!["hello world", "hello_ world", "hey\tyou"] {
-            let formatted = fst_format_resolved_value(sample);
-            assert_eq!(formatted.matches(" ").count(), 0);
-            assert_eq!(fst_unformat_resolved_value(&formatted), sample);
-        }
-    }
 
     #[test]
     fn whitespace_tokenizer_works_with_mutiple_spaces() {
