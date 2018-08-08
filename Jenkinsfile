@@ -50,11 +50,11 @@ node('jenkins-slave-generic') {
      }
    )
 
-   if (build.isRelease) {
-        machine(targets, "release") {
-            section(targets, "Release") {
-                performReleaseIfNeeded(build)
-            }
-        }
-    }
+   // if (build.isRelease) {
+   //      machine(targets, "release") {
+   //          section(targets, "Release") {
+   //              performReleaseIfNeeded(build)
+   //          }
+   //      }
+   //  }
 }
