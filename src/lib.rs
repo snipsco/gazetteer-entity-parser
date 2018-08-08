@@ -37,7 +37,7 @@
 //! });
 //! let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 //! parser.set_stop_words(1, Some(vec!["a", "for"])).unwrap();  // Set as stop words the most
-//! // common word in the gazetteer, plus "the" and "for"
+//! // common word in the gazetteer, plus "a" and "for"
 //! let parsed_stones = parser.run("I want to listen to the stones", 0.5).unwrap();
 //! assert_eq!(
 //!     parsed_stones,
