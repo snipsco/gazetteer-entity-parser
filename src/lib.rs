@@ -61,10 +61,10 @@
 
 #[macro_use]
 extern crate failure;
+extern crate fnv;
+extern crate rmp_serde as rmps;
 extern crate serde;
 extern crate serde_json;
-extern crate rmp_serde as rmps;
-extern crate fnv;
 
 #[macro_use]
 extern crate serde_derive;
@@ -72,8 +72,8 @@ extern crate serde_derive;
 mod constants;
 mod data;
 mod parser;
-mod utils;
 mod symbol_table;
+mod utils;
 
 pub use data::{EntityValue, Gazetteer};
 pub use parser::{ParsedValue, Parser};

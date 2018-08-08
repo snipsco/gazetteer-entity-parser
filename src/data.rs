@@ -21,9 +21,7 @@ pub struct Gazetteer {
     pub data: Vec<EntityValue>,
 }
 
-
 impl Gazetteer {
-
     /// Instanciate a new empty gazetteer
     pub fn new() -> Gazetteer {
         Gazetteer { data: Vec::new() }

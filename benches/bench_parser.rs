@@ -1,17 +1,17 @@
 #[macro_use]
 extern crate criterion;
 extern crate gazetteer_entity_parser;
-extern crate rand;
 extern crate mio_httpc;
+extern crate rand;
 extern crate serde_json;
 
-use gazetteer_entity_parser::{EntityValue, Gazetteer, Parser, ParsedValue};
+use gazetteer_entity_parser::{EntityValue, Gazetteer, ParsedValue, Parser};
+use mio_httpc::CallBuilder;
 use rand::distributions::Alphanumeric;
 use rand::seq::sample_iter;
 use rand::thread_rng;
 use rand::Rng;
-use std::collections::{HashSet};
-use mio_httpc::CallBuilder;
+use std::collections::HashSet;
 
 use criterion::Criterion;
 
@@ -25,7 +25,7 @@ fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
 struct RandomStringGenerator {
     unique_strings: Vec<String>,
     rng: rand::ThreadRng,
-    already_generated: HashSet<String>
+    already_generated: HashSet<String>,
 }
 
 impl RandomStringGenerator {
@@ -37,7 +37,7 @@ impl RandomStringGenerator {
         RandomStringGenerator {
             unique_strings,
             rng: rng,
-            already_generated: HashSet::new()
+            already_generated: HashSet::new(),
         }
     }
 
@@ -45,14 +45,15 @@ impl RandomStringGenerator {
         loop {
             let n_words = self.rng.gen_range(1, max_words);
             let mut s: Vec<String> = vec![];
-            for sample_idx in sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
+            for sample_idx in
+                sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
             {
                 s.push(self.unique_strings.get(sample_idx).unwrap().to_string());
             }
             let value = s.join(" ");
             if !self.already_generated.contains(&value) {
                 self.already_generated.insert(value.clone());
-                break value
+                break value;
             }
         }
     }
@@ -62,7 +63,7 @@ fn artist_gazetteer(c: &mut Criterion) {
     // Real-world artist gazetteer
     let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
     let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer{ data };
+    let gaz = Gazetteer { data };
 
     let n_stop_words = 30;
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
@@ -80,16 +81,14 @@ fn artist_gazetteer(c: &mut Criterion) {
         }]
     );
 
-
-    c.bench_function("Parse artist request - rolling stones - threhold 0.6", move |b| {
-        b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6))
-    });
+    c.bench_function(
+        "Parse artist request - rolling stones - threhold 0.6",
+        move |b| b.iter(|| parser.run("I'd like to listen to some rolling stones", 0.6)),
+    );
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
 
-    let parsed = parser
-        .run("I'd like to listen to the stones", 0.6)
-        .unwrap();
+    let parsed = parser.run("I'd like to listen to the stones", 0.6).unwrap();
     assert_eq!(
         parsed,
         vec![ParsedValue {
@@ -99,17 +98,17 @@ fn artist_gazetteer(c: &mut Criterion) {
         }]
     );
 
-    c.bench_function("Parse artist request - the stones - threshold 0.6", move |b| {
-        b.iter(|| parser.run("I'd like to listen to the stones", 0.6))
-    });
-
+    c.bench_function(
+        "Parse artist request - the stones - threshold 0.6",
+        move |b| b.iter(|| parser.run("I'd like to listen to the stones", 0.6)),
+    );
 }
 
 fn album_gazetteer(c: &mut Criterion) {
     // Real-world albums gazetteer
     let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
     let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer{ data };
+    let gaz = Gazetteer { data };
     let n_stop_words = 50;
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
@@ -126,11 +125,10 @@ fn album_gazetteer(c: &mut Criterion) {
             range: 19..40,
         }]
     );
-    c.bench_function("Parse album request - black and white album - threhold 0.6", move |b| {
-        b.iter(|| parser.run("Je veux écouter le black and white album", 0.6))
-    });
-
-
+    c.bench_function(
+        "Parse album request - black and white album - threhold 0.6",
+        move |b| b.iter(|| parser.run("Je veux écouter le black and white album", 0.6)),
+    );
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
@@ -147,9 +145,10 @@ fn album_gazetteer(c: &mut Criterion) {
         }]
     );
 
-    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.6", move |b| {
-        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.6))
-    });
+    c.bench_function(
+        "Parse album request - je veux ecouter dark side of the moon - threshold 0.6",
+        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon", 0.6)),
+    );
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
@@ -160,21 +159,23 @@ fn album_gazetteer(c: &mut Criterion) {
     assert_eq!(
         parsed,
         vec![
-        ParsedValue {
-            raw_value: "je veux".to_string(),
-            resolved_value: "Je veux du bonheur".to_string(),
-            range: 0..7,
-        },
-        ParsedValue {
-            raw_value: "dark side of the moon".to_string(),
-            resolved_value: "Dark Side of the Moon".to_string(),
-            range: 16..37,
-        }]
+            ParsedValue {
+                raw_value: "je veux".to_string(),
+                resolved_value: "Je veux du bonheur".to_string(),
+                range: 0..7,
+            },
+            ParsedValue {
+                raw_value: "dark side of the moon".to_string(),
+                resolved_value: "Dark Side of the Moon".to_string(),
+                range: 16..37,
+            },
+        ]
     );
 
-    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.5", move |b| {
-        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.5))
-    });
+    c.bench_function(
+        "Parse album request - je veux ecouter dark side of the moon - threshold 0.5",
+        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon", 0.5)),
+    );
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
@@ -191,9 +192,10 @@ fn album_gazetteer(c: &mut Criterion) {
         }]
     );
 
-    c.bench_function("Parse album request - je veux ecouter dark side of the moon - threshold 0.7", move |b| {
-        b.iter(|| parser.run("je veux écouter dark side of the moon", 0.7))
-    });
+    c.bench_function(
+        "Parse album request - je veux ecouter dark side of the moon - threshold 0.7",
+        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon", 0.7)),
+    );
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
@@ -210,11 +212,10 @@ fn album_gazetteer(c: &mut Criterion) {
         }]
     );
 
-    c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.6", move |b| {
-        b.iter(|| parser.run("the veux écouter dark side of the moon", 0.6))
-    });
-
-
+    c.bench_function(
+        "Parse album request - the veux ecouter dark side of the moon - threshold 0.6",
+        move |b| b.iter(|| parser.run("the veux écouter dark side of the moon", 0.6)),
+    );
 
     let mut parser = Parser::from_gazetteer(&gaz).unwrap();
     parser.set_stop_words(n_stop_words, None).unwrap();
@@ -231,13 +232,13 @@ fn album_gazetteer(c: &mut Criterion) {
         }]
     );
 
-    c.bench_function("Parse album request - the veux ecouter dark side of the moon - threshold 0.5", move |b| {
-        b.iter(|| parser.run("the veux écouter dark side of the moon", 0.5))
-    });
+    c.bench_function(
+        "Parse album request - the veux ecouter dark side of the moon - threshold 0.5",
+        move |b| b.iter(|| parser.run("the veux écouter dark side of the moon", 0.5)),
+    );
 }
 
 fn random_strings(c: &mut Criterion) {
-
     // Random gazetteer with low redundancy
     let mut rsg = RandomStringGenerator::new(10000);
     let mut gazetteer = Gazetteer::new();
