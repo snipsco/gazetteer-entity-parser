@@ -36,9 +36,11 @@
 //!     raw_value: "daniel brel".to_string(),
 //! });
 //! let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-//! parser.set_stop_words(1, Some(vec!["a", "for"])).unwrap();  // Set as stop words the most
-//! // common word in the gazetteer, plus "a" and "for"
-//! let parsed_stones = parser.run("I want to listen to the stones", 0.5).unwrap();
+//! // Set as stop words the most common word in the gazetteer, plus "a" and "for"
+//! parser.set_stop_words(1, Some(vec!["a", "for"])).unwrap();
+//! // Set minimal fraction of matched tokens for a parsing to be possible
+//! parser.set_threshold(0.5);
+//! let parsed_stones = parser.run("I want to listen to the stones").unwrap();
 //! assert_eq!(
 //!     parsed_stones,
 //!     vec![ParsedValue {
@@ -48,7 +50,7 @@
 //!     }]
 //! );
 //! // Example with an ambiguity, where the artist with smaller rank is preferred
-//! let parsed_brel = parser.run("I want to listen to brel", 0.5).unwrap();
+//! let parsed_brel = parser.run("I want to listen to brel").unwrap();
 //! assert_eq!(
 //!     parsed_brel,
 //!     vec![ParsedValue {

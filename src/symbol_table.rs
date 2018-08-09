@@ -66,7 +66,6 @@ impl<'de> Deserialize<'de> for GazetteerParserSymbolTable {
 }
 
 impl GazetteerParserSymbolTable {
-
     /// Add a new string symbol to the symbol table. The boolean force_add can be set to true to
     /// force adding the value once more, even though it may already be in the symbol table
     /// This function raises an error if called with force_add set to false on a symbol that is
