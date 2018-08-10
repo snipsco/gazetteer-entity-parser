@@ -670,22 +670,78 @@ impl Parser {
         self.threshold = Some(threshold);
     }
 
+    fn reduce_possible_match(input: &str, possible_match: PossibleMatch, overlapping_tokens: HashSet<usize>) -> Option<PossibleMatch> {
+        let mut reduced_possible_match: Option<PossibleMatch> = None;
+        for (token_idx, (token_range, _)) in whitespace_tokenizer(input).enumerate() {
+            if possible_match.tokens_range.start < token_idx && possible_match.tokens_range.end > token_idx && !overlapping_tokens.contains(&token_idx) {
+
+                if let Some(ref mut current_possible_match) = reduced_possible_match {
+                    current_possible_match.range.end = token_range.end;
+                    current_possible_match.tokens_range.end = token_idx + 1;
+                    current_possible_match.n_consumed_tokens += 1;
+                    continue
+                }
+
+                reduced_possible_match =
+                    Some(PossibleMatch {
+                        resolved_value: possible_match.resolved_value,
+                        range: token_range,
+                        tokens_range: token_idx..token_idx + 1,
+                        raw_value_length: possible_match.resolved_value,
+                        n_consumed_tokens: 1,
+                        last_token_in_input: 0,  // we are not going to need this one
+                        last_token_in_resolution: 0,  // we are not going to need this one
+                        rank: possible_match.rank,
+                    })
+            }
+        }
+        reduced_possible_match
+    }
+
+
     fn parse_input(
         &self,
         input: &str,
-        matches_heap: BinaryHeap<PossibleMatch>,
+        mut matches_heap: BinaryHeap<PossibleMatch>,
     ) -> GazetteerParserResult<Vec<ParsedValue>> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
 
-        'outer: for possible_match in matches_heap.into_sorted_vec().iter().rev() {
+
+        'outer: while !matches_heap.is_empty() && taken_tokens.len() < n_total_tokens {
+            let possible_match = matches_heap.pop().unwrap();
+
             let tokens_range_start = possible_match.tokens_range.start;
             let tokens_range_end = possible_match.tokens_range.end;
-            for tok_idx in tokens_range_start..tokens_range_end {
-                if taken_tokens.contains(&tok_idx) {
-                    continue 'outer;
+
+            let overlapping_tokens = {
+                let mut rep: HashSet<usize> = HashSet::default();
+                for t in tokens_range_start..tokens_range_end {
+                    if taken_tokens.contains(&t) {
+                        rep.insert(t);
+                    }
                 }
+                rep
+            };
+
+            if !overlapping_tokens.is_empty() {
+                let reduced_possible_matches = Self::reduce_possible_match(input, possible_match, overlapping_tokens);
+                if let Some(reduced_possible_match) = reduced_possible_matches {
+                    let val_threshold = match self.edge_cases.contains(&reduced_possible_match.resolved_value) {
+                        false => self.threshold.unwrap(),
+                        true => 1.0,
+                    };
+                    if check_threshold(
+                        reduced_possible_match.n_consumed_tokens,
+                        reduced_possible_match.raw_value_length - reduced_possible_match.n_consumed_tokens,
+                        val_threshold,
+                    ) {
+                        matches_heap.push(reduced_possible_match.clone());
+                    }
+
+                }
+                continue 'outer
             }
 
             let range_start = possible_match.range.start;
@@ -703,9 +759,6 @@ impl Parser {
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
-            }
-            if taken_tokens.len() == n_total_tokens {
-                break;
             }
         }
 
@@ -1531,7 +1584,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_match_longest_substring() {
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
@@ -1553,6 +1605,10 @@ mod tests {
         gazetteer.add(EntityValue {
             resolved_value: "3 4 5 6".to_string(),
             raw_value: "three four five six".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "6 7".to_string(),
+            raw_value: "six seven".to_string(),
         });
         let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
@@ -1580,21 +1636,38 @@ mod tests {
             }]
         );
 
-        // This last test is ambiguous and there may be several acceptable answers...
+        // This test is ambiguous and there may be several acceptable answers...
         parser.set_threshold(0.5);
-        let parsed = parser.run("one two three four five six").unwrap();
+        let parsed = parser.run("zero one two three four five six").unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    raw_value: "one two".to_string(),
+                    raw_value: "one two three four".to_string(),
                     resolved_value: "1 2 3 4".to_string(),
-                    range: 0..7,
+                    range: 5..23,
                 },
                 ParsedValue {
-                    raw_value: "three four five six".to_string(),
+                    raw_value: "five six".to_string(),
                     resolved_value: "3 4 5 6".to_string(),
-                    range: 8..27,
+                    range: 24..32,
+                },
+            ]
+        );
+
+        let parsed = parser.run("zero one two three four five six seven").unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    raw_value: "one two three four".to_string(),
+                    resolved_value: "1 2 3 4".to_string(),
+                    range: 5..23,
+                },
+                ParsedValue {
+                    raw_value: "six seven".to_string(),
+                    resolved_value: "6 7".to_string(),
+                    range: 29..38,
                 },
             ]
         );
