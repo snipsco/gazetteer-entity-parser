@@ -10,51 +10,61 @@ build = [
     toolchainVersion: "0.3.0"
 ]
 
+targetNames = [ 'linux', 'macos', 'ios' ]
+
+def jobs = [:]
 
 node('jenkins-slave-generic') {
 
-   stage('build') {
+   stage('setup-build') {
         checkoutSources()
 	targets = setupTargets(build) { build, target ->
             target.id = "${target.osType}_${target.osVersion}_${target.archType}"
             target.osCode = "${target.osType}-${target.osVersion}"
     	}
-
         build = setupBuild(build, {}, 'Cargo.toml')
    }
 
-   parallel(
-       "linux": { selectTargets(targets, { it.type == "linux" }) { linuxTargets ->
+   targetNames.each{ targetName ->
+           selectTargets(targets, { it.type == "${targetName}" }) { buildTargets ->
 
-            parallelize(linuxTargets) { target ->
+               jobs["${targetName}"] = { parallelize(buildTargets) { target ->
 
-                machine(target, "build") {
+                   machine(target, "build") {
+                       section(target, "checkoutSources-${target.id}") {
+                           deleteDir()
+                           checkoutSources(build)
+                       }
 
-                    section(target, "checkoutSources-${target.id}") {
-                      deleteDir()
-                      checkoutSources(build)
-                    }
+                       section(target, "build-${target.id}") {
+                            if (targetName != 'ios') {
+                                ssh_sh 'cargo build'
+                            } else {
+                                ssh_sh "cargo dinghy --platform ${target.triple} build"
+                            }
+                       }
 
-                    section(target, "build-${target.id}") {
-                      ssh_sh 'cargo build'
-                    }
+                       section(target, "test-${target.id}") {
+                            if (targetName != 'ios') {
+                                ssh_sh 'cargo build'
+                            } else if (targetName != 'ios'){
+                                ssh_sh "cargo dinghy --platform ${target.triple} test"
+                            }
+                       }
+                   }
+               } // end parallelize
+               }
 
-                    section(target, "test-${target.id}") {
-                      ssh_sh 'cargo test'
-                    }
+           } //end targetName
+   } // end for targetsName
 
-                }
-
-            } // end paralle
-         } //end linux
-     }
-   )
+   parallel( jobs )
 
    if (build.isRelease) {
-         machine(targets, "release") {
-             section(targets, "Release") {
-                 performReleaseIfNeeded(build)
-             }
-         }
-   }
+        machine(targets, "release") {
+            section(targets, "Release") {
+                performReleaseIfNeeded(build)
+            }
+        }
+    }
 }
