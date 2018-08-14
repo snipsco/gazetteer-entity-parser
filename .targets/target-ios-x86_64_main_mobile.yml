@@ -1,0 +1,13 @@
+archTrigram: null
+archType: 'x86_64'
+dockerTag: null
+kaldiVersion: null
+makefileTarget: 'x86_64-ios'
+osType: 'ios'
+osVersion: 'any'
+tensorflowVersion: null
+triple: 'x86_64-apple-ios'
+type: 'ios'
+simulator: true
+xcodebuildDestination: 'platform=iOS Simulator,name=iPhone X,OS=latest'
+sectionSwiftTest: true
