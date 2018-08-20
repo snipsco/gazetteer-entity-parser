@@ -53,7 +53,7 @@ pub struct Parser {
 struct ParserConfig {
     version: String,
     parser_filename: String,
-    threshold: Option<f32>,
+    threshold: f32,
     stop_words: HashSet<String>,
     edge_cases: HashSet<String>
 }
@@ -846,7 +846,7 @@ mod tests {
             .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path)).unwrap();
         let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
 
-        assert_eq!(config.threshold, Some(0.5));
+        assert_eq!(config.threshold, 0.5);
         let mut gt_stop_words: HashSet<String> = HashSet::default();
         gt_stop_words.insert("the".to_string());
         gt_stop_words.insert("stones".to_string());
