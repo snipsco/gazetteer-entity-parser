@@ -46,7 +46,7 @@ pub struct Parser {
     // Keep track of values injected thus far
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
-    threshold: Option<f32>,
+    threshold: f32
 }
 
 #[derive(Serialize, Deserialize)]
@@ -656,13 +656,8 @@ impl Parser {
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
     pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let decoding_threshold = match self.threshold {
-            Some(value) => value,
-            None => {
-                bail!("Threshold has not been set. Please use the `set_threshold` method to set it")
-            }
-        };
-        let matches_heap = self.find_possible_matches(input, decoding_threshold)?;
+
+        let matches_heap = self.find_possible_matches(input, self.threshold)?;
         let parsing = self.parse_input(input, matches_heap)?;
         Ok(parsing)
     }
@@ -670,7 +665,7 @@ impl Parser {
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
     /// Running a parsing will crash unless the threshold has been set.
     pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = Some(threshold);
+        self.threshold = threshold;
     }
 
     fn reduce_possible_match(input: &str, possible_match: PossibleMatch, overlapping_tokens: HashSet<usize>) -> Option<PossibleMatch> {
@@ -732,7 +727,7 @@ impl Parser {
                 let reduced_possible_matches = Self::reduce_possible_match(input, possible_match, overlapping_tokens);
                 if let Some(reduced_possible_match) = reduced_possible_matches {
                     let val_threshold = match self.edge_cases.contains(&reduced_possible_match.resolved_value) {
-                        false => self.threshold.unwrap(),
+                        false => self.threshold,
                         true => 1.0,
                     };
                     if check_threshold(
