@@ -53,6 +53,9 @@ pub struct Parser {
 struct ParserConfig {
     version: String,
     parser_filename: String,
+    threshold: Option<f32>,
+    stop_words: HashSet<String>,
+    edge_cases: HashSet<String>
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -766,11 +769,14 @@ impl Parser {
         Ok(parsing.into_sorted_vec())
     }
 
-    fn get_parser_config() -> ParserConfig {
-        ParserConfig {
+    fn get_parser_config(&self) -> GazetteerParserResult<ParserConfig> {
+        Ok(ParserConfig {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-        }
+            threshold: self.threshold,
+            stop_words: self.get_stop_words()?,
+            edge_cases: self.get_edge_cases()?
+        })
     }
 
     /// Dump the parser to a folder
@@ -781,7 +787,7 @@ impl Parser {
                 folder_name.as_ref()
             )
         })?;
-        let config = Self::get_parser_config();
+        let config = self.get_parser_config()?;
         let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
         serde_json::to_writer(writer, &config)?;
 
@@ -836,9 +842,26 @@ mod tests {
         parser.set_threshold(0.5);
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
-        tdir.close().unwrap();
 
-        assert_eq!(parser, reloaded_parser)
+        assert_eq!(parser, reloaded_parser);
+
+        // check content of metadata
+        let metadata_path = tdir.as_ref().join("parser").join(METADATA_FILENAME);
+        let metadata_file = fs::File::open(&metadata_path)
+            .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path)).unwrap();
+        let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
+
+        assert_eq!(config.threshold, Some(0.5));
+        let mut gt_stop_words: HashSet<String> = HashSet::default();
+        gt_stop_words.insert("the".to_string());
+        gt_stop_words.insert("stones".to_string());
+        gt_stop_words.insert("hello".to_string());
+        assert_eq!(config.stop_words, gt_stop_words);
+        let mut gt_edge_cases: HashSet<String> = HashSet::default();
+        gt_edge_cases.insert("The Rolling Stones".to_string());
+        assert_eq!(config.edge_cases, gt_edge_cases);
+
+        tdir.close().unwrap();
     }
 
     #[test]
