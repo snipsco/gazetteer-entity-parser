@@ -31,22 +31,23 @@ impl<'a> ParserBuilder<'a> {
         self
     }
 
-    /// Set additional stop words manually. In order for this method to be used, the number of
-    /// stop words to be extracted from the gazetteer should also be set using the `n_stop_words`
-    /// method
+    /// Set additional stop words manually
     pub fn additional_stop_words(&mut self, asw: Vec<&'a str>) -> &'a mut ParserBuilder {
         self.additional_stop_words = Some(asw);
         self
     }
 
-    /// Instanciate a Parser from the ParserBuilder
+    /// Instantiate a Parser from the ParserBuilder
     pub fn build(&self) -> GazetteerParserResult<Parser> {
-        let mut parser = Parser::from_gazetteer(&self.gazetteer)?;
+        let mut parser = Parser::default();
+        for (rank, entity_value) in self.gazetteer.data.iter().enumerate() {
+            parser.add_value(entity_value, rank as u32)?;
+        }
         parser.set_threshold(self.threshold);
         if let Some(n) = &self.n_gazetteer_stop_words {
             parser.set_stop_words(*n, self.additional_stop_words.clone())?;
         } else if let Some(_) = &self.additional_stop_words {
-            bail!("The `n_stop_words` attribute needs to be set using the `n_stop_words` method")
+            parser.set_stop_words(0, self.additional_stop_words.clone())?;
         }
         Ok(parser)
     }
@@ -77,10 +78,13 @@ mod tests {
             .n_stop_words(2)
             .additional_stop_words(vec!["hello"]).build().unwrap();
 
-        let mut parser_from_gaz = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser_from_gaz.set_threshold(0.5);
-        parser_from_gaz.set_stop_words(2, Some(vec!["hello"])).unwrap();
+        let mut parser_manual = Parser::default();
+        for (rank, entity_value) in gazetteer.data.iter().enumerate() {
+            parser_manual.add_value(entity_value, rank as u32).unwrap();
+        }
+        parser_manual.set_threshold(0.5);
+        parser_manual.set_stop_words(2, Some(vec!["hello"])).unwrap();
 
-        assert_eq!(parser_from_builder, parser_from_gaz);
+        assert_eq!(parser_from_builder, parser_manual);
     }
 }
