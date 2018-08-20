@@ -128,16 +128,15 @@ impl PartialOrd for ParsedValue {
 impl Parser {
 
     /// Add a single entity value to the parser
-    pub(crate) fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
+    pub(crate) fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> GazetteerParserResult<()> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
         let res_value_idx = self
             .resolved_symbol_table
-            .add_symbol(&entity_value.resolved_value, true)?;
+            .add_symbol(entity_value.resolved_value, true)?;
 
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            let token_idx = self.tokens_symbol_table.add_symbol(&token, false)?;
-
+            let token_idx = self.tokens_symbol_table.add_symbol(token, false)?;
             // Update token_to_resolved_values map
             self.token_to_resolved_values
                 .entry(token_idx)
@@ -175,7 +174,7 @@ impl Parser {
     pub fn set_stop_words(
         &mut self,
         n_stop_words: usize,
-        additional_stop_words: Option<Vec<&str>>,
+        additional_stop_words: Option<Vec<String>>,
     ) -> GazetteerParserResult<()> {
         // Update the set of stop words with the most frequent words in the gazetteer
         // Reset stop words
@@ -219,7 +218,7 @@ impl Parser {
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-            for tok_s in &additional_stop_words_vec {
+            for tok_s in additional_stop_words_vec {
                 let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
                 self.stop_words.insert(tok_idx);
             }
@@ -266,7 +265,7 @@ impl Parser {
     /// previously injected values before adding the new ones.
     pub fn inject_new_values(
         &mut self,
-        new_values: &Vec<EntityValue>,
+        new_values: Vec<EntityValue>,
         prepend: bool,
         from_vanilla: bool,
     ) -> GazetteerParserResult<()> {
@@ -322,18 +321,18 @@ impl Parser {
                         // last rank onwards
         } as u32;
 
-        for (rank, entity_value) in new_values.iter().enumerate() {
-            self.add_value(entity_value, new_start_rank + rank as u32)?;
+        for (rank, entity_value) in new_values.into_iter().enumerate() {
+            self.add_value(entity_value.clone(), new_start_rank + rank as u32)?;
             self.injected_values
-                .insert(entity_value.resolved_value.clone());
+                .insert(entity_value.resolved_value);
         }
 
         // Update the stop words and edge cases
-        let n_stop_words = self.n_stop_words.clone();
+        let n_stop_words = self.n_stop_words;
         let additional_stop_words = self.additional_stop_words.clone();
         self.set_stop_words(
             n_stop_words,
-            Some(additional_stop_words.iter().map(|s| s.as_str()).collect()),
+            Some(additional_stop_words)
         )?;
 
         Ok(())
@@ -822,9 +821,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let parser = ParserBuilder::new(&gazetteer, 0.5)
+        let parser = ParserBuilder::new(gazetteer, 0.5)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello"]).build().unwrap();
+            .additional_stop_words(vec!["hello".to_string()]).build().unwrap();
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 
@@ -870,9 +869,9 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(&gazetteer, 0.5)
+        let mut parser = ParserBuilder::new(gazetteer, 0.5)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello"]).build().unwrap();
+            .additional_stop_words(vec!["hello".to_string()]).build().unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -985,7 +984,7 @@ mod tests {
             raw_value: "je suis animal".to_string(),
         });
 
-        let parser = ParserBuilder::new(&gazetteer, 0.0).build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
 
         let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -1056,7 +1055,7 @@ mod tests {
             raw_value: "blink 182".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(&gazetteer, 0.0).build().unwrap();
+        let mut parser = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
 
         let mut parsed = parser.run("let's listen to blink 182").unwrap();
         assert_eq!(
@@ -1115,7 +1114,7 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         // When there is a tie in terms of number of token matched, match the most popular choice
         let parsed = parser.run("je veux écouter the stones").unwrap();
@@ -1178,7 +1177,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser
             .run("the music I want to listen to is rolling on stones")
@@ -1193,7 +1192,7 @@ mod tests {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
         });
-        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser.run("non quand est survivre").unwrap();
         assert_eq!(
@@ -1214,7 +1213,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser.run("rolling the stones").unwrap();
         assert_eq!(
@@ -1251,7 +1250,7 @@ mod tests {
             raw_value: "les enfoirés".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+        let mut parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -1312,7 +1311,8 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+
+        let mut parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser.run("the the the").unwrap();
         assert_eq!(parsed, vec![]);
@@ -1339,7 +1339,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(&gazetteer, 0.6).build().unwrap();
+        let mut parser = ParserBuilder::new(gazetteer, 0.6).build().unwrap();
 
         let new_values = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1347,7 +1347,7 @@ mod tests {
         }];
 
         // Test with preprend set to false
-        parser.inject_new_values(&new_values, false, false).unwrap();
+        parser.inject_new_values(new_values.clone(), false, false).unwrap();
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
 
         assert_eq!(
@@ -1371,7 +1371,8 @@ mod tests {
         );
 
         // Test with preprend set to true
-        parser.inject_new_values(&new_values, true, false).unwrap();
+        parser.inject_new_values(new_values, true, false).unwrap();
+
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
 
         assert_eq!(
@@ -1403,7 +1404,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(&gazetteer, 0.6).build().unwrap();
+        let mut parser = ParserBuilder::new(gazetteer, 0.6).build().unwrap();
 
         let new_values_1 = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1411,7 +1412,7 @@ mod tests {
         }];
 
         parser
-            .inject_new_values(&new_values_1, true, false)
+            .inject_new_values(new_values_1, true, false)
             .unwrap();
 
         // Test injection from vanilla
@@ -1435,7 +1436,7 @@ mod tests {
             .find_single_symbol("The Flying Stones")
             .unwrap()
             .unwrap();
-        parser.inject_new_values(&new_values_2, true, true).unwrap();
+        parser.inject_new_values(new_values_2, true, true).unwrap();
 
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
         assert_eq!(parsed, vec![]);
@@ -1487,12 +1488,13 @@ mod tests {
             resolved_value: "The Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let mut parser = ParserBuilder::new(&gazetteer, 0.0)
+
+        let mut parser = ParserBuilder::new(gazetteer.clone(), 0.0)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello"])
+            .additional_stop_words(vec!["hello".to_string()])
             .build().unwrap();
 
-        let parser_no_stop_words = ParserBuilder::new(&gazetteer, 0.0)
+        let parser_no_stop_words = ParserBuilder::new(gazetteer, 0.0)
             .build().unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
@@ -1541,7 +1543,7 @@ mod tests {
             },
         ];
 
-        parser.inject_new_values(&new_values, true, false).unwrap();
+        parser.inject_new_values(new_values, true, false).unwrap();
 
         gt_stop_words.remove(
             &parser
@@ -1609,7 +1611,7 @@ mod tests {
             raw_value: "six seven".to_string(),
         });
 
-        let parser = ParserBuilder::new(&gazetteer, 0.5)
+        let parser = ParserBuilder::new(gazetteer, 0.5)
             .build().unwrap();
 
         let parsed = parser
@@ -1677,7 +1679,7 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new(&gaz, 0.6)
+        let mut parser = ParserBuilder::new(gaz, 0.6)
             .n_stop_words(n_stop_words)
             .build().unwrap();
 
@@ -1707,7 +1709,7 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new(&gaz, 0.6)
+        let mut parser = ParserBuilder::new(gaz, 0.6)
             .n_stop_words(n_stop_words)
             .build().unwrap();
 
@@ -1763,11 +1765,11 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
-        let mut parser_for_test = ParserBuilder::new(&album_gaz, 0.6)
+        let mut parser_for_test = ParserBuilder::new(album_gaz.clone(), 0.6)
             .n_stop_words(50)
             .build().unwrap();
 
-        let mut parser = ParserBuilder::new(&album_gaz, 0.6)
+        let mut parser = ParserBuilder::new(album_gaz, 0.6)
             .n_stop_words(50)
             .build().unwrap();
 
@@ -1790,7 +1792,7 @@ mod tests {
             }]
         );
         parser_for_test
-            .inject_new_values(&new_values, true, false)
+            .inject_new_values(new_values.clone(), true, false)
             .unwrap();
         parser_for_test.set_threshold(0.7);
         let parsed = parser_for_test
@@ -1806,7 +1808,7 @@ mod tests {
         );
 
         let now = Instant::now();
-        parser.inject_new_values(&new_values, true, false).unwrap();
+        parser.inject_new_values(new_values, true, false).unwrap();
         let total_time = now.elapsed().as_secs();
         assert!(total_time < 10);
     }

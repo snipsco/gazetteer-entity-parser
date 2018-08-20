@@ -66,7 +66,7 @@ fn artist_gazetteer(c: &mut Criterion) {
     let gaz = Gazetteer { data };
 
     let n_stop_words = 30;
-    let parser = ParserBuilder::new(&gaz, 0.6)
+    let parser = ParserBuilder::new(gaz.clone(), 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -87,7 +87,7 @@ fn artist_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("I'd like to listen to some rolling stones")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.6)
+    let parser = ParserBuilder::new(gaz, 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -114,7 +114,7 @@ fn album_gazetteer(c: &mut Criterion) {
     let gaz = Gazetteer { data };
     let n_stop_words = 50;
 
-    let parser = ParserBuilder::new(&gaz, 0.6)
+    let parser = ParserBuilder::new(gaz.clone(), 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -134,7 +134,7 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("Je veux écouter le black and white album")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.6)
+    let parser = ParserBuilder::new(gaz.clone(), 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -155,7 +155,7 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.5)
+    let parser = ParserBuilder::new(gaz.clone(), 0.5)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -183,7 +183,7 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.7)
+    let parser = ParserBuilder::new(gaz.clone(), 0.7)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -204,7 +204,7 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.6)
+    let parser = ParserBuilder::new(gaz.clone(), 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -225,7 +225,7 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("the veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(&gaz, 0.5)
+    let parser = ParserBuilder::new(gaz, 0.5)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -260,7 +260,7 @@ fn random_strings(c: &mut Criterion) {
     }
 
     let n_stop_words = 50;
-    let parser = ParserBuilder::new(&gazetteer, 0.5)
+    let parser = ParserBuilder::new(gazetteer, 0.5)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 
@@ -279,7 +279,7 @@ fn random_strings(c: &mut Criterion) {
         });
     }
 
-    let parser = ParserBuilder::new(&gazetteer, 0.6)
+    let parser = ParserBuilder::new(gazetteer, 0.6)
         .n_stop_words(n_stop_words)
         .build().unwrap();
 

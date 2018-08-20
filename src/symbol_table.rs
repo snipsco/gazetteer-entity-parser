@@ -70,13 +70,13 @@ impl GazetteerParserSymbolTable {
     /// force adding the value once more, even though it may already be in the symbol table
     /// This function raises an error if called with force_add set to false on a symbol that is
     /// already present several times in the symbol table
-    pub fn add_symbol(&mut self, symbol: &str, force_add: bool) -> GazetteerParserResult<u32> {
-        if force_add || !self.string_to_indices.contains_key(symbol) {
+    pub fn add_symbol(&mut self, symbol: String, force_add: bool) -> GazetteerParserResult<u32> {
+        if force_add || !self.string_to_indices.contains_key(&symbol) {
             let available_index = self.available_index;
             self.index_to_string
-                .insert(available_index, symbol.to_string());
+                .insert(available_index, symbol.clone());
             self.string_to_indices
-                .entry(symbol.to_string())
+                .entry(symbol)
                 .and_modify(|v| {
                     v.push(available_index);
                 })
@@ -86,7 +86,7 @@ impl GazetteerParserSymbolTable {
         } else {
             let indices = self
                 .string_to_indices
-                .get(symbol)
+                .get(&symbol)
                 .ok_or_else(|| format_err!("Symbol {:?} missing from symbol table", symbol))?;
             if indices.len() > 1 {
                 bail!("Symbol {:?} is already present several times in the symbol table, cannot determine which index to return", symbol);

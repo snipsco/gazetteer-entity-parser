@@ -16,7 +16,7 @@ pub struct EntityValue {
 /// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the parser.
 /// The values should be added in order of popularity or probability, with the most popular value
 /// added first (see Parser).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Gazetteer {
     pub data: Vec<EntityValue>,
 }
