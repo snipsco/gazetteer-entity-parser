@@ -11,7 +11,7 @@
 //!
 //!```rust
 //!
-//! use gazetteer_entity_parser::{Gazetteer, Parser, EntityValue, ParsedValue};
+//! use gazetteer_entity_parser::{Gazetteer, ParserBuilder, EntityValue, ParsedValue};
 //!
 //! let mut gazetteer = Gazetteer::new();
 //! // We fill the gazetteer with artists, sorted by popularity
@@ -35,11 +35,16 @@
 //!     resolved_value: "Daniel Brel".to_string(),
 //!     raw_value: "daniel brel".to_string(),
 //! });
-//! let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-//! // Set as stop words the most common word in the gazetteer, plus "a" and "for"
-//! parser.set_stop_words(1, Some(vec!["a", "for"])).unwrap();
-//! // Set minimal fraction of matched tokens for a parsing to be possible
-//! parser.set_threshold(0.5);
+//!
+//! // The Parser is then instanciated using a builder pattern. The ParserBuilder is instanciated
+//! // from a gazetteer and a decoding threshold, i.e. the minimal fraction of matched tokens for
+//! // a parsing to be possible. Additional methods allow to set the stop words of the Parser,
+//! // e.g. here the most common word of the gazetteer, plus "a" and "for".
+//! let parser = ParserBuilder::new(&gazetteer, 0.5)
+//!     .n_stop_words(1)
+//!     .additional_stop_words(vec!["a", "for"]).build().unwrap();
+//!
+//! // Parse a sentence
 //! let parsed_stones = parser.run("I want to listen to the stones").unwrap();
 //! assert_eq!(
 //!     parsed_stones,
@@ -49,6 +54,7 @@
 //!         range: 20..30,
 //!     }]
 //! );
+//!
 //! // Example with an ambiguity, where the artist with smaller rank is preferred
 //! let parsed_brel = parser.run("I want to listen to brel").unwrap();
 //! assert_eq!(
@@ -76,7 +82,9 @@ mod data;
 mod parser;
 mod symbol_table;
 mod utils;
+mod parser_builder;
 
 pub use data::{EntityValue, Gazetteer};
 pub use parser::{ParsedValue, Parser};
+pub use parser_builder::ParserBuilder;
 pub mod errors;

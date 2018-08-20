@@ -216,8 +216,6 @@ impl Parser {
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table)
-        // Reset edhe cases
-        self.edge_cases = HashSet::default();
         if let Some(additional_stop_words_vec) = additional_stop_words {
             self.additional_stop_words = additional_stop_words_vec
                 .iter()
@@ -230,6 +228,10 @@ impl Parser {
         }
 
         // Update the set of edge_cases. i.e. resolved value that only contain stop words
+
+        // Reset edge cases
+        self.edge_cases = HashSet::default();
+
         'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
             for tok in tokens {
                 if !(self.stop_words.contains(tok)) {
@@ -262,7 +264,7 @@ impl Parser {
     /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
     /// This function adds the entity values from the gazetteer. This is the recommended method
     /// to define a parser.
-    pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
+    pub(crate) fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
         let mut parser = Parser::default();
         for (rank, entity_value) in gazetteer.data.iter().enumerate() {
             parser.add_value(entity_value, rank as u32)?;
