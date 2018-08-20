@@ -36,7 +36,7 @@
 //!     raw_value: "daniel brel".to_string(),
 //! });
 //!
-//! // The Parser is then instanciated using a builder pattern. The ParserBuilder is instanciated
+//! // The Parser is then instantiated using a builder pattern. The ParserBuilder is instantiated
 //! // from a gazetteer and a decoding threshold, i.e. the minimal fraction of matched tokens for
 //! // a parsing to be possible. Additional methods allow to set the stop words of the Parser,
 //! // e.g. here the most common word of the gazetteer, plus "a" and "for".
