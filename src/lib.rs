@@ -40,9 +40,9 @@
 //! // from a gazetteer and a decoding threshold, i.e. the minimal fraction of matched tokens for
 //! // a parsing to be possible. Additional methods allow to set the stop words of the Parser,
 //! // e.g. here the most common word of the gazetteer, plus "a" and "for".
-//! let parser = ParserBuilder::new(&gazetteer, 0.5)
+//! let parser = ParserBuilder::new(gazetteer, 0.5)
 //!     .n_stop_words(1)
-//!     .additional_stop_words(vec!["a", "for"]).build().unwrap();
+//!     .additional_stop_words(vec!["a".to_string(), "for".to_string()]).build().unwrap();
 //!
 //! // Parse a sentence
 //! let parsed_stones = parser.run("I want to listen to the stones").unwrap();
