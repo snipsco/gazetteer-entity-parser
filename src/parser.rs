@@ -1,6 +1,5 @@
 use constants::*;
 use data::EntityValue;
-use data::Gazetteer;
 use errors::GazetteerParserResult;
 use failure::ResultExt;
 use fnv::FnvHashMap as HashMap;
@@ -46,14 +45,14 @@ pub struct Parser {
     // Keep track of values injected thus far
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
-    threshold: Option<f32>,
+    threshold: f32
 }
 
 #[derive(Serialize, Deserialize)]
 struct ParserConfig {
     version: String,
     parser_filename: String,
-    threshold: Option<f32>,
+    threshold: f32,
     stop_words: HashSet<String>,
     edge_cases: HashSet<String>
 }
@@ -127,10 +126,9 @@ impl PartialOrd for ParsedValue {
 }
 
 impl Parser {
-    /// Add a single entity value to the parser. This function is kept private to promote
-    /// creating the parser with a higher level function (such as `from_gazetteer`) that
-    /// performs additional global optimizations.
-    fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
+
+    /// Add a single entity value to the parser
+    pub(crate) fn add_value(&mut self, entity_value: &EntityValue, rank: u32) -> GazetteerParserResult<()> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
         let res_value_idx = self
@@ -216,8 +214,6 @@ impl Parser {
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table)
-        // Reset edhe cases
-        self.edge_cases = HashSet::default();
         if let Some(additional_stop_words_vec) = additional_stop_words {
             self.additional_stop_words = additional_stop_words_vec
                 .iter()
@@ -230,6 +226,10 @@ impl Parser {
         }
 
         // Update the set of edge_cases. i.e. resolved value that only contain stop words
+
+        // Reset edge cases
+        self.edge_cases = HashSet::default();
+
         'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
             for tok in tokens {
                 if !(self.stop_words.contains(tok)) {
@@ -257,17 +257,6 @@ impl Parser {
             .iter()
             .map(|idx| self.resolved_symbol_table.find_index(idx).unwrap())
             .collect())
-    }
-
-    /// Create a Parser from a Gazetteer, which represents an ordered list of entity values.
-    /// This function adds the entity values from the gazetteer. This is the recommended method
-    /// to define a parser.
-    pub fn from_gazetteer(gazetteer: &Gazetteer) -> GazetteerParserResult<Parser> {
-        let mut parser = Parser::default();
-        for (rank, entity_value) in gazetteer.data.iter().enumerate() {
-            parser.add_value(entity_value, rank as u32)?;
-        }
-        Ok(parser)
     }
 
     /// Add new values to an already trained Parser. This function is used for entity injection.
@@ -656,21 +645,15 @@ impl Parser {
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
     pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
-        let decoding_threshold = match self.threshold {
-            Some(value) => value,
-            None => {
-                bail!("Threshold has not been set. Please use the `set_threshold` method to set it")
-            }
-        };
-        let matches_heap = self.find_possible_matches(input, decoding_threshold)?;
+
+        let matches_heap = self.find_possible_matches(input, self.threshold)?;
         let parsing = self.parse_input(input, matches_heap)?;
         Ok(parsing)
     }
 
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
-    /// Running a parsing will crash unless the threshold has been set.
     pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = Some(threshold);
+        self.threshold = threshold;
     }
 
     fn reduce_possible_match(input: &str, possible_match: PossibleMatch, overlapping_tokens: HashSet<usize>) -> Option<PossibleMatch> {
@@ -732,7 +715,7 @@ impl Parser {
                 let reduced_possible_matches = Self::reduce_possible_match(input, possible_match, overlapping_tokens);
                 if let Some(reduced_possible_match) = reduced_possible_matches {
                     let val_threshold = match self.edge_cases.contains(&reduced_possible_match.resolved_value) {
-                        false => self.threshold.unwrap(),
+                        false => self.threshold,
                         true => 1.0,
                     };
                     if check_threshold(
@@ -820,6 +803,8 @@ mod tests {
     #[allow(unused_imports)]
     use data::EntityValue;
     use std::time::Instant;
+    use parser_builder::ParserBuilder;
+    use data::Gazetteer;
 
     #[test]
     fn test_seralization_deserialization() {
@@ -837,9 +822,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
-        parser.set_threshold(0.5);
+        let parser = ParserBuilder::new(&gazetteer, 0.5)
+            .n_stop_words(2)
+            .additional_stop_words(vec!["hello"]).build().unwrap();
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 
@@ -851,7 +836,7 @@ mod tests {
             .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path)).unwrap();
         let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
 
-        assert_eq!(config.threshold, Some(0.5));
+        assert_eq!(config.threshold, 0.5);
         let mut gt_stop_words: HashSet<String> = HashSet::default();
         gt_stop_words.insert("the".to_string());
         gt_stop_words.insert("stones".to_string());
@@ -884,8 +869,10 @@ mod tests {
             resolved_value: "The Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
+
+        let mut parser = ParserBuilder::new(&gazetteer, 0.5)
+            .n_stop_words(2)
+            .additional_stop_words(vec!["hello"]).build().unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -997,9 +984,9 @@ mod tests {
             resolved_value: "Je Suis Animal".to_string(),
             raw_value: "je suis animal".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.0);
+        let parser = ParserBuilder::new(&gazetteer, 0.0).build().unwrap();
+
         let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
             parsed,
@@ -1017,7 +1004,6 @@ mod tests {
             ]
         );
 
-        parser.set_threshold(0.0);
         parsed = parser.run("je veux ecouter les \t rolling stones").unwrap();
         assert_eq!(
             parsed,
@@ -1035,7 +1021,6 @@ mod tests {
             ]
         );
 
-        parser.set_threshold(0.0);
         parsed = parser
             .run("i want to listen to rolling stones and blink eight")
             .unwrap();
@@ -1055,7 +1040,6 @@ mod tests {
             ]
         );
 
-        parser.set_threshold(0.0);
         parsed = parser.run("joue moi quelque chose").unwrap();
         assert_eq!(parsed, vec![]);
     }
@@ -1071,9 +1055,9 @@ mod tests {
             resolved_value: "Blink-182".to_string(),
             raw_value: "blink 182".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.0);
+        let mut parser = ParserBuilder::new(&gazetteer, 0.0).build().unwrap();
+
         let mut parsed = parser.run("let's listen to blink 182").unwrap();
         assert_eq!(
             parsed,
@@ -1109,8 +1093,6 @@ mod tests {
 
     #[test]
     fn test_parser_with_ranking() {
-        /* Weight is here a proxy for the ranking of an artist in a popularity
-        index */
 
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
@@ -1133,10 +1115,9 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
 
         // When there is a tie in terms of number of token matched, match the most popular choice
-        parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter the stones").unwrap();
         assert_eq!(
             parsed,
@@ -1147,7 +1128,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter brel").unwrap();
         assert_eq!(
             parsed,
@@ -1159,7 +1139,6 @@ mod tests {
         );
 
         // Resolve to the value with more words matching regardless of popularity
-        parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter the flying stones").unwrap();
         assert_eq!(
             parsed,
@@ -1170,7 +1149,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter daniel brel").unwrap();
         assert_eq!(
             parsed,
@@ -1181,7 +1159,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter jacques").unwrap();
         assert_eq!(
             parsed,
@@ -1200,9 +1177,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.5);
+        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+
         let parsed = parser
             .run("the music I want to listen to is rolling on stones")
             .unwrap();
@@ -1216,9 +1193,8 @@ mod tests {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("non quand est survivre").unwrap();
         assert_eq!(
             parsed,
@@ -1237,9 +1213,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.5);
+        let parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+
         let parsed = parser.run("rolling the stones").unwrap();
         assert_eq!(
             parsed,
@@ -1274,9 +1250,9 @@ mod tests {
             resolved_value: "Les Enfoirés".to_string(),
             raw_value: "les enfoirés".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.5);
+        let mut parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
+
         let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
             parsed,
@@ -1336,9 +1312,8 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+        let mut parser = ParserBuilder::new(&gazetteer, 0.5).build().unwrap();
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("the the the").unwrap();
         assert_eq!(parsed, vec![]);
 
@@ -1363,7 +1338,8 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let mut parser = ParserBuilder::new(&gazetteer, 0.6).build().unwrap();
 
         let new_values = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1371,7 +1347,6 @@ mod tests {
         }];
 
         // Test with preprend set to false
-        parser.set_threshold(0.6);
         parser.inject_new_values(&new_values, false, false).unwrap();
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
 
@@ -1384,7 +1359,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.6);
         let parsed = parser.run("je veux écouter the stones").unwrap();
 
         assert_eq!(
@@ -1397,7 +1371,6 @@ mod tests {
         );
 
         // Test with preprend set to true
-        parser.set_threshold(0.6);
         parser.inject_new_values(&new_values, true, false).unwrap();
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
 
@@ -1410,7 +1383,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.6);
         let parsed = parser.run("je veux écouter the stones").unwrap();
 
         assert_eq!(
@@ -1430,7 +1402,8 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
+
+        let mut parser = ParserBuilder::new(&gazetteer, 0.6).build().unwrap();
 
         let new_values_1 = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1464,11 +1437,9 @@ mod tests {
             .unwrap();
         parser.inject_new_values(&new_values_2, true, true).unwrap();
 
-        parser.set_threshold(0.6);
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
         assert_eq!(parsed, vec![]);
 
-        parser.set_threshold(0.6);
         let parsed = parser.run("je veux écouter queens the stone age").unwrap();
         assert_eq!(
             parsed,
@@ -1516,9 +1487,13 @@ mod tests {
             resolved_value: "The Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
-        parser.set_stop_words(2, Some(vec!["hello"])).unwrap();
-        let parser_no_stop_words = Parser::from_gazetteer(&gazetteer).unwrap();
+        let mut parser = ParserBuilder::new(&gazetteer, 0.0)
+            .n_stop_words(2)
+            .additional_stop_words(vec!["hello"])
+            .build().unwrap();
+
+        let parser_no_stop_words = ParserBuilder::new(&gazetteer, 0.0)
+            .build().unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -1633,9 +1608,10 @@ mod tests {
             resolved_value: "6 7".to_string(),
             raw_value: "six seven".to_string(),
         });
-        let mut parser = Parser::from_gazetteer(&gazetteer).unwrap();
 
-        parser.set_threshold(0.5);
+        let parser = ParserBuilder::new(&gazetteer, 0.5)
+            .build().unwrap();
+
         let parsed = parser
             .run("je veux écouter le black and white album")
             .unwrap();
@@ -1648,7 +1624,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.5);
         let parsed = parser.run("one two three four").unwrap();
         assert_eq!(
             parsed,
@@ -1660,7 +1635,6 @@ mod tests {
         );
 
         // This test is ambiguous and there may be several acceptable answers...
-        parser.set_threshold(0.5);
         let parsed = parser.run("zero one two three four five six").unwrap();
         assert_eq!(
             parsed,
@@ -1702,11 +1676,11 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer { data };
 
-        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let n_stop_words = 50;
-        parser.set_stop_words(n_stop_words, None).unwrap();
+        let mut parser = ParserBuilder::new(&gaz, 0.6)
+            .n_stop_words(n_stop_words)
+            .build().unwrap();
 
-        parser.set_threshold(0.6);
         let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
             parsed,
@@ -1732,11 +1706,11 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer { data };
 
-        let mut parser = Parser::from_gazetteer(&gaz).unwrap();
         let n_stop_words = 50;
-        parser.set_stop_words(n_stop_words, None).unwrap();
+        let mut parser = ParserBuilder::new(&gaz, 0.6)
+            .n_stop_words(n_stop_words)
+            .build().unwrap();
 
-        parser.set_threshold(0.6);
         let parsed = parser
             .run("je veux écouter le black and white album")
             .unwrap();
@@ -1749,7 +1723,6 @@ mod tests {
             }]
         );
 
-        parser.set_threshold(0.6);
         let parsed = parser
             .run("je veux écouter dark side of the moon")
             .unwrap();
@@ -1790,10 +1763,13 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
-        let mut parser_for_test = Parser::from_gazetteer(&album_gaz).unwrap();
-        parser_for_test.set_stop_words(50, None).unwrap();
-        let mut parser = Parser::from_gazetteer(&album_gaz).unwrap();
-        parser.set_stop_words(50, None).unwrap();
+        let mut parser_for_test = ParserBuilder::new(&album_gaz, 0.6)
+            .n_stop_words(50)
+            .build().unwrap();
+
+        let mut parser = ParserBuilder::new(&album_gaz, 0.6)
+            .n_stop_words(50)
+            .build().unwrap();
 
         // Get 10k values from the album gazetter to inject in the album parser
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
