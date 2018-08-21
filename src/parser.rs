@@ -214,6 +214,7 @@ impl Parser {
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table and to tokens_to_resolved_value)
         if let Some(additional_stop_words_vec) = additional_stop_words {
+            self.additional_stop_words = additional_stop_words_vec.clone();
             for tok_s in additional_stop_words_vec.into_iter() {
                 let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
                 self.stop_words.insert(tok_idx);
