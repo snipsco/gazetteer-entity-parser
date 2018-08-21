@@ -212,15 +212,14 @@ impl Parser {
         }
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
-        // the symbol table)
+        // the symbol table and to tokens_to_resolved_value)
         if let Some(additional_stop_words_vec) = additional_stop_words {
-            self.additional_stop_words = additional_stop_words_vec
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            for tok_s in additional_stop_words_vec {
+            self.additional_stop_words = additional_stop_words_vec.clone();
+            for tok_s in additional_stop_words_vec.into_iter() {
                 let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
                 self.stop_words.insert(tok_idx);
+                self.token_to_resolved_values.entry(tok_idx)
+                    .or_insert(HashSet::default());
             }
         }
 
@@ -962,6 +961,17 @@ mod tests {
         parser.set_threshold(0.5);
         let parsed = parser.run("je veux écouter les the").unwrap();
         assert_eq!(parsed, vec![]);
+
+        // Sentence containing an additional stop word which is absent from the gazetteer
+        let parsed = parser.run("hello I want to listen to the rolling stones").unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 26..44,
+            }]
+        );
     }
 
     #[test]
