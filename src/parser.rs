@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::Path;
 use symbol_table::GazetteerParserSymbolTable;
 use utils::{check_threshold, whitespace_tokenizer};
+use std::result::Result;
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -133,7 +134,7 @@ impl Parser {
         &mut self,
         entity_value: EntityValue,
         rank: u32,
-    ) -> GazetteerParserResult<(), AddValueError> {
+    ) -> Result<(), AddValueError> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
 
@@ -200,7 +201,7 @@ impl Parser {
         &mut self,
         n_stop_words: usize,
         additional_stop_words: Option<Vec<String>>,
-    ) -> GazetteerParserResult<(), SetStopWordsError> {
+    ) -> Result<(), SetStopWordsError> {
         // Update the set of stop words with the most frequent words in the gazetteer
         // Reset stop words
         self.stop_words = HashSet::default();
@@ -270,7 +271,7 @@ impl Parser {
     }
 
     /// Get the set of stop words
-    pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>, GetStopWordsError> {
+    pub fn get_stop_words(&self) -> Result<HashSet<String>, GetStopWordsError> {
         self.stop_words
             .iter()
             .map(|idx| {
@@ -282,7 +283,7 @@ impl Parser {
     }
 
     /// Get the set of edge cases, containing only stop words
-    pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>, GetEdgeCasesError> {
+    pub fn get_edge_cases(&self) -> Result<HashSet<String>, GetEdgeCasesError> {
         self.edge_cases
             .iter()
             .map(|idx| {
@@ -303,7 +304,7 @@ impl Parser {
         new_values: Vec<EntityValue>,
         prepend: bool,
         from_vanilla: bool,
-    ) -> GazetteerParserResult<(), InjectionError> {
+    ) -> Result<(), InjectionError> {
         if from_vanilla {
             // Remove the resolved values form the resolved_symbol_table
             // Remove the resolved value from the resolved_value_to_tokens map
@@ -395,7 +396,7 @@ impl Parser {
     fn get_tokens_from_resolved_value(
         &self,
         resolved_value: &u32,
-    ) -> GazetteerParserResult<&(u32, Vec<u32>), TokensFromResolvedValueError> {
+    ) -> Result<&(u32, Vec<u32>), TokensFromResolvedValueError> {
         Ok(self
             .resolved_value_to_tokens
             .get(resolved_value)
@@ -408,7 +409,7 @@ impl Parser {
     fn get_resolved_values_from_token(
         &self,
         token: &u32,
-    ) -> GazetteerParserResult<&HashSet<u32>, ResolvedValuesFromTokenError> {
+    ) -> Result<&HashSet<u32>, ResolvedValuesFromTokenError> {
         Ok(self
             .token_to_resolved_values
             .get(token)
@@ -423,7 +424,7 @@ impl Parser {
         &self,
         input: &str,
         threshold: f32,
-    ) -> GazetteerParserResult<BinaryHeap<PossibleMatch>, FindPossibleMatchError> {
+    ) -> Result<BinaryHeap<PossibleMatch>, FindPossibleMatchError> {
         let mut possible_matches: HashMap<u32, PossibleMatch> =
             HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
@@ -589,7 +590,7 @@ impl Parser {
         range_end: usize,
         threshold: f32,
         ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
-    ) -> GazetteerParserResult<(), FindPossibleMatchRootError> {
+    ) -> Result<(), FindPossibleMatchRootError> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         {
             if possible_match.resolved_value == *res_val
@@ -660,7 +661,7 @@ impl Parser {
         token_idx: usize,
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
-    ) -> GazetteerParserResult<Option<PossibleMatch>, FindPossibleMatchRootError> {
+    ) -> Result<Option<PossibleMatch>, FindPossibleMatchRootError> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
             FindPossibleMatchRootError::MissingTokenFromList {
@@ -725,7 +726,7 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>, RunError> {
+    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>, RunError> {
         let matches_heap = self
             .find_possible_matches(input, self.threshold)
             .map_err(|cause| RunError {
@@ -783,7 +784,7 @@ impl Parser {
         &self,
         input: &str,
         mut matches_heap: BinaryHeap<PossibleMatch>,
-    ) -> GazetteerParserResult<Vec<ParsedValue>, ParseInputError> {
+    ) -> Result<Vec<ParsedValue>, ParseInputError> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
@@ -850,7 +851,7 @@ impl Parser {
         Ok(parsing.into_sorted_vec())
     }
 
-    fn get_parser_config(&self) -> GazetteerParserResult<ParserConfig, GetParserConfigError> {
+    fn get_parser_config(&self) -> Result<ParserConfig, GetParserConfigError> {
         Ok(ParserConfig {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -869,7 +870,7 @@ impl Parser {
     }
 
     /// Dump the parser to a folder
-    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<(), DumpError> {
+    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<(), DumpError> {
         fs::create_dir(folder_name.as_ref())
             .map_err(|cause| SerializationError::Io {
                 path: folder_name.as_ref().to_path_buf(),
@@ -923,7 +924,7 @@ impl Parser {
     }
 
     /// Load a resolver from a folder
-    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> GazetteerParserResult<Parser, LoadError> {
+    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser, LoadError> {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
         let metadata_file = fs::File::open(&metadata_path).map_err(|cause| LoadError {
             cause: DeserializationError::Io {

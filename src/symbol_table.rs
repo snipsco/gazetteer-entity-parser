@@ -6,6 +6,7 @@ use fnv::FnvHashMap as HashMap;
 use serde::Deserializer;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
+use std::result::Result;
 
 #[derive(PartialEq, Eq, Debug, Default)]
 pub struct GazetteerParserSymbolTable {
@@ -74,7 +75,7 @@ impl GazetteerParserSymbolTable {
         &mut self,
         symbol: String,
         force_add: bool,
-    ) -> GazetteerParserResult<u32, SymbolTableAddSymbolError> {
+    ) -> Result<u32, SymbolTableAddSymbolError> {
         if force_add || !self.string_to_indices.contains_key(&symbol) {
             let available_index = self.available_index;
             self.index_to_string.insert(available_index, symbol.clone());
@@ -136,7 +137,7 @@ impl GazetteerParserSymbolTable {
     pub fn find_single_symbol(
         &self,
         symbol: &str,
-    ) -> GazetteerParserResult<Option<u32>, SymbolTableFindSingleSymbolError> {
+    ) -> Result<Option<u32>, SymbolTableFindSingleSymbolError> {
         match self.find_symbol(symbol) {
             Some(vec) if vec.len() == 1 => Ok(Some(*vec.first().unwrap())),
             Some(vec) if vec.len() == 0 => {
@@ -157,7 +158,7 @@ impl GazetteerParserSymbolTable {
     pub fn find_index(
         &self,
         idx: &u32,
-    ) -> GazetteerParserResult<String, SymbolTableFindIndexError> {
+    ) -> Result<String, SymbolTableFindIndexError> {
         let symb = self
             .index_to_string
             .get(idx)

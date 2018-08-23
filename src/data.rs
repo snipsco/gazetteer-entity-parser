@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::path::Path;
+use std::result::Result;
 
 use serde_json;
 
@@ -43,7 +44,7 @@ impl Gazetteer {
     pub fn from_json<P: AsRef<Path>>(
         filename: P,
         limit: Option<usize>,
-    ) -> GazetteerParserResult<Gazetteer, GazetteerLoadingError> {
+    ) -> Result<Gazetteer, GazetteerLoadingError> {
         let file = File::open(filename.as_ref()).map_err(|cause| GazetteerLoadingError {
             cause: DeserializationError::Io {
                 path: filename.as_ref().to_path_buf(),

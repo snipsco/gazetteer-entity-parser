@@ -4,7 +4,6 @@ use serde_json;
 use std::io;
 use std::path::PathBuf;
 
-pub type GazetteerParserResult<T, E> = ::std::result::Result<T, E>;
 
 #[derive(Debug, Fail, Clone)]
 pub enum SymbolTableAddSymbolError {
