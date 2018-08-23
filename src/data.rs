@@ -44,25 +44,25 @@ impl Gazetteer {
         filename: P,
         limit: Option<usize>,
     ) -> GazetteerParserResult<Gazetteer, GazetteerLoadingError> {
-        let file = File::open(filename.as_ref()).map_err (
-            |cause| GazetteerLoadingError {
-                cause: DeserializationError::Io {
-                    path: filename.as_ref().to_path_buf(),
-                    cause: cause
-                } }
-        )?;
+        let file = File::open(filename.as_ref()).map_err(|cause| GazetteerLoadingError {
+            cause: DeserializationError::Io {
+                path: filename.as_ref().to_path_buf(),
+                cause: cause,
+            },
+        })?;
 
-        let mut data: Vec<EntityValue> = serde_json::from_reader(file).map_err(
-            |cause|
-                GazetteerLoadingError {
-                    cause: DeserializationError::ReadGazetteerError {
+        let mut data: Vec<EntityValue> =
+            serde_json::from_reader(file).map_err(|cause| GazetteerLoadingError {
+                cause: DeserializationError::ReadGazetteerError {
                     path: filename.as_ref().to_path_buf(),
-                    cause
-                } }
-        )?;
+                    cause,
+                },
+            })?;
         match limit {
             None => (),
-            Some(0) => Err(GazetteerLoadingError { cause: DeserializationError::InvalidGazetteerLimit})?,
+            Some(0) => Err(GazetteerLoadingError {
+                cause: DeserializationError::InvalidGazetteerLimit,
+            })?,
             Some(value) => data.truncate(value),
         };
         Ok(Gazetteer { data })

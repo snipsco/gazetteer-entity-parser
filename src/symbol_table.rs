@@ -1,7 +1,6 @@
 /// Implementation of a symbol table that
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
-
 use errors::*;
 use fnv::FnvHashMap as HashMap;
 use serde::Deserializer;
@@ -71,11 +70,14 @@ impl GazetteerParserSymbolTable {
     /// force adding the value once more, even though it may already be in the symbol table
     /// This function raises an error if called with force_add set to false on a symbol that is
     /// already present several times in the symbol table
-    pub fn add_symbol(&mut self, symbol: String, force_add: bool) -> GazetteerParserResult<u32, SymbolTableAddSymbolError> {
+    pub fn add_symbol(
+        &mut self,
+        symbol: String,
+        force_add: bool,
+    ) -> GazetteerParserResult<u32, SymbolTableAddSymbolError> {
         if force_add || !self.string_to_indices.contains_key(&symbol) {
             let available_index = self.available_index;
-            self.index_to_string
-                .insert(available_index, symbol.clone());
+            self.index_to_string.insert(available_index, symbol.clone());
             self.string_to_indices
                 .entry(symbol)
                 .and_modify(|v| {
@@ -85,24 +87,17 @@ impl GazetteerParserSymbolTable {
             self.available_index += 1;
             Ok(available_index)
         } else {
-            let indices = self
-                .string_to_indices
-                .get(&symbol)
-                .ok_or_else(|| SymbolTableAddSymbolError::MissingKeyError {
-                    key: symbol.clone()
-                })?;
-            if indices.len() > 1 {
-                return Err(
-                    SymbolTableAddSymbolError::DuplicateSymbolError {
-                        symbol
-                    }
-                )
-            }
-            Ok(*indices.first().ok_or_else(||
+            let indices = self.string_to_indices.get(&symbol).ok_or_else(|| {
                 SymbolTableAddSymbolError::MissingKeyError {
-                    key: symbol
-                })?
-            )
+                    key: symbol.clone(),
+                }
+            })?;
+            if indices.len() > 1 {
+                return Err(SymbolTableAddSymbolError::DuplicateSymbolError { symbol });
+            }
+            Ok(*indices
+                .first()
+                .ok_or_else(|| SymbolTableAddSymbolError::MissingKeyError { key: symbol })?)
         }
     }
 
@@ -111,7 +106,7 @@ impl GazetteerParserSymbolTable {
         if let Some(indices) = self.find_symbol(symbol) {
             indices_values = indices.clone();
         } else {
-            return None
+            return None;
         }
 
         // Remove the indices from both hashmaps
@@ -138,37 +133,35 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Find the unique index of a symbol, and raise an error if it has more than one index
-    pub fn find_single_symbol(&self, symbol: &str) -> GazetteerParserResult<Option<u32>, SymbolTableFindSingleSymbolError> {
+    pub fn find_single_symbol(
+        &self,
+        symbol: &str,
+    ) -> GazetteerParserResult<Option<u32>, SymbolTableFindSingleSymbolError> {
         match self.find_symbol(symbol) {
             Some(vec) if vec.len() == 1 => Ok(Some(*vec.first().unwrap())),
             Some(vec) if vec.len() == 0 => {
-                return Err(
-                    SymbolTableFindSingleSymbolError::MissingKeyError {
-                        key: symbol.to_string()
-                    }
-                )
-            },
+                return Err(SymbolTableFindSingleSymbolError::MissingKeyError {
+                    key: symbol.to_string(),
+                })
+            }
             Some(vec) if vec.len() > 0 => {
-                return Err(
-                    SymbolTableFindSingleSymbolError::DuplicateSymbolError {
-                        symbol: symbol.to_string()
-                    }
-                )
+                return Err(SymbolTableFindSingleSymbolError::DuplicateSymbolError {
+                    symbol: symbol.to_string(),
+                })
             }
             _ => Ok(None),
         }
     }
 
     /// Find the unique symbol corresponding to an index in the symbol table
-    pub fn find_index(&self, idx: &u32) -> GazetteerParserResult<String, SymbolTableFindIndexError> {
+    pub fn find_index(
+        &self,
+        idx: &u32,
+    ) -> GazetteerParserResult<String, SymbolTableFindIndexError> {
         let symb = self
             .index_to_string
             .get(idx)
-            .ok_or_else(||
-                SymbolTableFindIndexError::MissingKeyError {
-                    key: *idx
-                }
-            )?;
+            .ok_or_else(|| SymbolTableFindIndexError::MissingKeyError { key: *idx })?;
         Ok(symb.to_string())
     }
 }
