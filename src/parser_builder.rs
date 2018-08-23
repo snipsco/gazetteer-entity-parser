@@ -1,6 +1,7 @@
 use parser::Parser;
 use data::Gazetteer;
-use errors::GazetteerParserResult;
+use errors::*;
+use std::result::Result;
 
 
 /// Struct exposing a builder allowing to configure and build a Parser
@@ -39,16 +40,28 @@ impl ParserBuilder {
     }
 
     /// Instantiate a Parser from the ParserBuilder
-    pub fn build(self) -> GazetteerParserResult<Parser> {
+    pub fn build(self) -> Result<Parser, BuildError> {
         let mut parser = Parser::default();
         for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
-            parser.add_value(entity_value, rank as u32)?;
+            parser.add_value(entity_value, rank as u32).map_err(
+                |cause| BuildError {
+                    cause: BuildRootError::AddValueError(cause)
+                }
+            )?;
         }
         parser.set_threshold(self.threshold);
         if let Some(n) = self.n_gazetteer_stop_words {
-            parser.set_stop_words(n, self.additional_stop_words)?;
+            parser.set_stop_words(n, self.additional_stop_words).map_err(
+                |cause| BuildError {
+                    cause: BuildRootError::SetStopWordsError(cause)
+                }
+            )?;
         } else if let Some(_) = self.additional_stop_words {
-            parser.set_stop_words(0, self.additional_stop_words)?;
+            parser.set_stop_words(0, self.additional_stop_words).map_err(
+                |cause| BuildError {
+                    cause: BuildRootError::SetStopWordsError(cause)
+                }
+            )?;
         }
         Ok(parser)
     }

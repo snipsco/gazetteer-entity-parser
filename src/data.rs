@@ -1,10 +1,10 @@
 use std::fs::File;
 use std::path::Path;
+use std::result::Result;
 
-use failure::ResultExt;
 use serde_json;
 
-use errors::GazetteerParserResult;
+use errors::*;
 
 /// Struct representing the value of an entity to be added to the parser
 #[derive(Debug, Deserialize, Clone)]
@@ -44,13 +44,26 @@ impl Gazetteer {
     pub fn from_json<P: AsRef<Path>>(
         filename: P,
         limit: Option<usize>,
-    ) -> GazetteerParserResult<Gazetteer> {
-        let file = File::open(filename.as_ref())
-            .with_context(|_| format!("Cannot open gazetter file {:?}", filename.as_ref()))?;
-        let mut data: Vec<EntityValue> = serde_json::from_reader(file)?;
+    ) -> Result<Gazetteer, GazetteerLoadingError> {
+        let file = File::open(filename.as_ref()).map_err(|cause| GazetteerLoadingError {
+            cause: DeserializationError::Io {
+                path: filename.as_ref().to_path_buf(),
+                cause: cause,
+            },
+        })?;
+
+        let mut data: Vec<EntityValue> =
+            serde_json::from_reader(file).map_err(|cause| GazetteerLoadingError {
+                cause: DeserializationError::ReadGazetteerError {
+                    path: filename.as_ref().to_path_buf(),
+                    cause,
+                },
+            })?;
         match limit {
             None => (),
-            Some(0) => Err(format_err!("limit should be > 0"))?,
+            Some(0) => Err(GazetteerLoadingError {
+                cause: DeserializationError::InvalidGazetteerLimit,
+            })?,
             Some(value) => data.truncate(value),
         };
         Ok(Gazetteer { data })

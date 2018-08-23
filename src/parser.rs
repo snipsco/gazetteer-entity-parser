@@ -1,7 +1,6 @@
 use constants::*;
 use data::EntityValue;
-use errors::GazetteerParserResult;
-use failure::ResultExt;
+use errors::*;
 use fnv::FnvHashMap as HashMap;
 use fnv::FnvHashSet as HashSet;
 use rmps::{from_read, Serializer};
@@ -15,6 +14,7 @@ use std::ops::Range;
 use std::path::Path;
 use symbol_table::GazetteerParserSymbolTable;
 use utils::{check_threshold, whitespace_tokenizer};
+use std::result::Result;
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -45,7 +45,7 @@ pub struct Parser {
     // Keep track of values injected thus far
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
-    threshold: f32
+    threshold: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,12 +54,12 @@ struct ParserConfig {
     parser_filename: String,
     threshold: f32,
     stop_words: HashSet<String>,
-    edge_cases: HashSet<String>
+    edge_cases: HashSet<String>,
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct PossibleMatch {
+pub struct PossibleMatch {
     resolved_value: u32,
     range: Range<usize>,
     tokens_range: Range<usize>,
@@ -108,6 +108,9 @@ impl Ord for ParsedValue {
     fn cmp(&self, other: &ParsedValue) -> Ordering {
         match self.partial_cmp(other) {
             Some(value) => value,
+            // The following should not happen: we need to make sure that we compare only
+            // comparable ParsedValues wherever we use a heap of ParsedValue's (see e.g. the
+            // `parse_input` method)
             None => panic!("Parsed values are not comparable: {:?}, {:?}", self, other),
         }
     }
@@ -126,17 +129,40 @@ impl PartialOrd for ParsedValue {
 }
 
 impl Parser {
-
     /// Add a single entity value to the parser
-    pub(crate) fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> GazetteerParserResult<()> {
+    pub(crate) fn add_value(
+        &mut self,
+        entity_value: EntityValue,
+        rank: u32,
+    ) -> Result<(), AddValueError> {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
+
+        let EntityValue {
+            raw_value,
+            resolved_value,
+        } = entity_value;
         let res_value_idx = self
             .resolved_symbol_table
-            .add_symbol(entity_value.resolved_value, true)?;
+            .add_symbol(resolved_value, true)
+            .map_err(|cause| match cause.clone() {
+                SymbolTableAddSymbolError::MissingKeyError { key: k }
+                | SymbolTableAddSymbolError::DuplicateSymbolError { 0: DuplicateSymbolError { symbol: k } } => AddValueError {
+                    kind: AddValueErrorKind::ResolvedValue,
+                    value: k,
+                    cause,
+                },
+            })?;
 
-        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            let token_idx = self.tokens_symbol_table.add_symbol(token, false)?;
+        for (_, token) in whitespace_tokenizer(&raw_value) {
+            let token_idx = self
+                .tokens_symbol_table
+                .add_symbol(token, false)
+                .map_err(|cause| AddValueError {
+                    kind: AddValueErrorKind::RawValue,
+                    value: raw_value.clone(),
+                    cause,
+                })?;
             // Update token_to_resolved_values map
             self.token_to_resolved_values
                 .entry(token_idx)
@@ -175,7 +201,7 @@ impl Parser {
         &mut self,
         n_stop_words: usize,
         additional_stop_words: Option<Vec<String>>,
-    ) -> GazetteerParserResult<()> {
+    ) -> Result<(), SetStopWordsError> {
         // Update the set of stop words with the most frequent words in the gazetteer
         // Reset stop words
         self.stop_words = HashSet::default();
@@ -216,9 +242,13 @@ impl Parser {
         if let Some(additional_stop_words_vec) = additional_stop_words {
             self.additional_stop_words = additional_stop_words_vec.clone();
             for tok_s in additional_stop_words_vec.into_iter() {
-                let tok_idx = self.tokens_symbol_table.add_symbol(tok_s, false)?;
+                let tok_idx = self
+                    .tokens_symbol_table
+                    .add_symbol(tok_s, false)
+                    .map_err(|cause| SetStopWordsError { cause })?;
                 self.stop_words.insert(tok_idx);
-                self.token_to_resolved_values.entry(tok_idx)
+                self.token_to_resolved_values
+                    .entry(tok_idx)
                     .or_insert(HashSet::default());
             }
         }
@@ -241,20 +271,27 @@ impl Parser {
     }
 
     /// Get the set of stop words
-    pub fn get_stop_words(&self) -> GazetteerParserResult<HashSet<String>> {
+    pub fn get_stop_words(&self) -> Result<HashSet<String>, GetStopWordsError> {
         self.stop_words
             .iter()
-            .map(|idx| self.tokens_symbol_table.find_index(idx))
+            .map(|idx| {
+                self.tokens_symbol_table
+                    .find_index(idx)
+                    .map_err(|cause| GetStopWordsError { cause })
+            })
             .collect()
     }
 
     /// Get the set of edge cases, containing only stop words
-    pub fn get_edge_cases(&self) -> GazetteerParserResult<HashSet<String>> {
-        Ok(self
-            .edge_cases
+    pub fn get_edge_cases(&self) -> Result<HashSet<String>, GetEdgeCasesError> {
+        self.edge_cases
             .iter()
-            .map(|idx| self.resolved_symbol_table.find_index(idx).unwrap())
-            .collect())
+            .map(|idx| {
+                self.resolved_symbol_table
+                    .find_index(idx)
+                    .map_err(|cause| GetEdgeCasesError { cause })
+            })
+            .collect()
     }
 
     /// Add new values to an already trained Parser. This function is used for entity injection.
@@ -267,7 +304,7 @@ impl Parser {
         new_values: Vec<EntityValue>,
         prepend: bool,
         from_vanilla: bool,
-    ) -> GazetteerParserResult<()> {
+    ) -> Result<(), InjectionError> {
         if from_vanilla {
             // Remove the resolved values form the resolved_symbol_table
             // Remove the resolved value from the resolved_value_to_tokens map
@@ -277,16 +314,27 @@ impl Parser {
             // tokens_symbol_table
             let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
             for val in &self.injected_values {
-                if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val)? {
+                if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val) {
                     for res_val in res_val_indices {
-                        let (_, tokens) = self.get_tokens_from_resolved_value(&res_val)?.clone();
+                        let (_, tokens) = self
+                            .get_tokens_from_resolved_value(&res_val)
+                            .map_err(|cause| InjectionError {
+                                cause: InjectionRootError::TokensFromResolvedValueError(cause),
+                            })?
+                            .clone();
                         self.resolved_value_to_tokens.remove(&res_val);
                         for tok in tokens {
                             self.token_to_resolved_values.entry(tok).and_modify(|v| {
                                 v.remove(&res_val);
                             });
                             // Check the remaining resolved values containing the token
-                            if self.get_resolved_values_from_token(&tok)?.is_empty() {
+                            if self
+                                .get_resolved_values_from_token(&tok)
+                                .map_err(|cause| InjectionError {
+                                    cause: InjectionRootError::ResolvedValuesFromTokenError(cause),
+                                })?
+                                .is_empty()
+                            {
                                 tokens_marked_for_removal.insert(tok);
                             }
                         }
@@ -294,8 +342,13 @@ impl Parser {
                 }
             }
             for tok_idx in tokens_marked_for_removal {
-                let tok = self.tokens_symbol_table.find_index(&tok_idx)?;
-                if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok)? {
+                let tok = self
+                    .tokens_symbol_table
+                    .find_index(&tok_idx)
+                    .map_err(|cause| InjectionError {
+                        cause: InjectionRootError::SymbolTableFindIndexError(cause),
+                    })?;
+                if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok) {
                     for idx in tok_indices {
                         self.token_to_resolved_values.remove(&idx);
                         self.token_to_count.remove(&idx);
@@ -321,18 +374,20 @@ impl Parser {
         } as u32;
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), new_start_rank + rank as u32)?;
-            self.injected_values
-                .insert(entity_value.resolved_value);
+            self.add_value(entity_value.clone(), new_start_rank + rank as u32)
+                .map_err(|cause| InjectionError {
+                    cause: InjectionRootError::AddValueError(cause),
+                })?;
+            self.injected_values.insert(entity_value.resolved_value);
         }
 
         // Update the stop words and edge cases
         let n_stop_words = self.n_stop_words;
         let additional_stop_words = self.additional_stop_words.clone();
-        self.set_stop_words(
-            n_stop_words,
-            Some(additional_stop_words)
-        )?;
+        self.set_stop_words(n_stop_words, Some(additional_stop_words))
+            .map_err(|cause| InjectionError {
+                cause: InjectionRootError::SetStopWordsError(cause),
+            })?;
 
         Ok(())
     }
@@ -341,24 +396,24 @@ impl Parser {
     fn get_tokens_from_resolved_value(
         &self,
         resolved_value: &u32,
-    ) -> GazetteerParserResult<&(u32, Vec<u32>)> {
+    ) -> Result<&(u32, Vec<u32>), TokensFromResolvedValueError> {
         Ok(self
             .resolved_value_to_tokens
             .get(resolved_value)
-            .ok_or_else(|| {
-                format_err!(
-                    "Missing value {:?} from resolved_value_to_tokens",
-                    resolved_value
-                )
+            .ok_or_else(|| TokensFromResolvedValueError::MissingKeyError {
+                key: *resolved_value,
             })?)
     }
 
     /// get resolved values from token
-    fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>> {
+    fn get_resolved_values_from_token(
+        &self,
+        token: &u32,
+    ) -> Result<&HashSet<u32>, ResolvedValuesFromTokenError> {
         Ok(self
             .token_to_resolved_values
             .get(token)
-            .ok_or_else(|| format_err!("Missing value {:?} from token_to_resolved_values", token))?)
+            .ok_or_else(|| ResolvedValuesFromTokenError::MissingKeyError { key: *token })?)
     }
 
     /// Find all possible matches in a string.
@@ -369,7 +424,7 @@ impl Parser {
         &self,
         input: &str,
         threshold: f32,
-    ) -> GazetteerParserResult<BinaryHeap<PossibleMatch>> {
+    ) -> Result<BinaryHeap<PossibleMatch>, FindPossibleMatchError> {
         let mut possible_matches: HashMap<u32, PossibleMatch> =
             HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
@@ -377,25 +432,38 @@ impl Parser {
         'outer: for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
             let range_start = range.start;
             let range_end = range.end;
-            match self.tokens_symbol_table.find_single_symbol(&token)? {
+            match self
+                .tokens_symbol_table
+                .find_single_symbol(&token)
+                .map_err(|cause| FindPossibleMatchError {
+                    cause: FindPossibleMatchRootError::SymbolTableFindSingleSymbolError(cause),
+                })? {
                 Some(value) => {
                     if !self.stop_words.contains(&value) {
-                        for res_val in self.get_resolved_values_from_token(&value)? {
+                        for res_val in self.get_resolved_values_from_token(&value).map_err(
+                            |cause| FindPossibleMatchError {
+                                cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(
+                                    cause,
+                                ),
+                            },
+                        )? {
                             let entry = possible_matches.entry(*res_val);
                             match entry {
-                                Entry::Occupied(mut entry) => self.update_previous_match(
-                                    &mut *entry.get_mut(),
-                                    res_val,
-                                    token_idx,
-                                    value,
-                                    range_start,
-                                    range_end,
-                                    threshold,
-                                    &mut matches_heap,
-                                ),
+                                Entry::Occupied(mut entry) => {
+                                    self.update_previous_match(
+                                        &mut *entry.get_mut(),
+                                        res_val,
+                                        token_idx,
+                                        value,
+                                        range_start,
+                                        range_end,
+                                        threshold,
+                                        &mut matches_heap,
+                                    ).map_err(|cause| FindPossibleMatchError { cause })?
+                                }
                                 Entry::Vacant(entry) => {
-                                    if let Some(new_possible_match) = self
-                                        .insert_new_possible_match(
+                                    if let Some(new_possible_match) =
+                                        self.insert_new_possible_match(
                                             res_val,
                                             value,
                                             range_start,
@@ -403,7 +471,8 @@ impl Parser {
                                             token_idx,
                                             threshold,
                                             &skipped_tokens,
-                                        )? {
+                                        ).map_err(|cause| FindPossibleMatchError { cause })?
+                                    {
                                         entry.insert(new_possible_match);
                                     }
                                 }
@@ -413,24 +482,32 @@ impl Parser {
                         skipped_tokens.insert(token_idx, (range_start..range_end, value));
                         // Iterate over all edge cases and try to add or update corresponding
                         // PossibleMatch's. Using a threshold of 1.
-                        let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
+                        let res_vals_from_token = self
+                            .get_resolved_values_from_token(&value)
+                            .map_err(|cause| FindPossibleMatchError {
+                                cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(
+                                    cause,
+                                ),
+                            })?;
                         for res_val in &self.edge_cases {
                             if res_vals_from_token.contains(&res_val) {
                                 let entry = possible_matches.entry(*res_val);
                                 match entry {
-                                    Entry::Occupied(mut entry) => self.update_previous_match(
-                                        &mut *entry.get_mut(),
-                                        res_val,
-                                        token_idx,
-                                        value,
-                                        range_start,
-                                        range_end,
-                                        1.0,
-                                        &mut matches_heap,
-                                    ),
+                                    Entry::Occupied(mut entry) => {
+                                        self.update_previous_match(
+                                            &mut *entry.get_mut(),
+                                            res_val,
+                                            token_idx,
+                                            value,
+                                            range_start,
+                                            range_end,
+                                            1.0,
+                                            &mut matches_heap,
+                                        ).map_err(|cause| FindPossibleMatchError { cause })?
+                                    }
                                     Entry::Vacant(entry) => {
-                                        if let Some(new_possible_match) = self
-                                            .insert_new_possible_match(
+                                        if let Some(new_possible_match) =
+                                            self.insert_new_possible_match(
                                                 res_val,
                                                 value,
                                                 range_start,
@@ -438,7 +515,8 @@ impl Parser {
                                                 token_idx,
                                                 1.0,
                                                 &skipped_tokens,
-                                            )? {
+                                            ).map_err(|cause| FindPossibleMatchError { cause })?
+                                        {
                                             entry.insert(new_possible_match);
                                         }
                                     }
@@ -466,7 +544,7 @@ impl Parser {
                                     range_end,
                                     val_threshold,
                                     &mut matches_heap,
-                                )
+                                ).map_err(|cause| FindPossibleMatchError { cause })?;
                             }
                         }
                     }
@@ -479,10 +557,11 @@ impl Parser {
         for possible_match in possible_matches.values() {
             // We start by adding the PossibleMatch to the heap
             if possible_match.n_consumed_tokens > possible_match.raw_value_length {
-                bail!(
-                    "Consumed more tokens than are available: {:?}",
-                    possible_match
-                )
+                return Err(PossibleMatchRootError::PossibleMatchConsumedError {
+                    possible_match: possible_match.clone(),
+                }).map_err(|cause| FindPossibleMatchError {
+                    cause: FindPossibleMatchRootError::PossibleMatchRootError(cause),
+                });
             }
             // In case the resolved value is an edge case, we set the threshold to 1 for this
             // value
@@ -498,7 +577,6 @@ impl Parser {
                 matches_heap.push(possible_match.clone());
             }
         }
-
         Ok(matches_heap)
     }
 
@@ -512,7 +590,7 @@ impl Parser {
         range_end: usize,
         threshold: f32,
         ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
-    ) {
+    ) -> Result<(), FindPossibleMatchRootError> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
         {
             if possible_match.resolved_value == *res_val
@@ -529,7 +607,7 @@ impl Parser {
                         possible_match.last_token_in_input = token_idx;
                         possible_match.last_token_in_resolution = otoken_idx;
                         possible_match.tokens_range.end += 1;
-                        return;
+                        return Ok(());
                     }
                 }
             }
@@ -540,10 +618,9 @@ impl Parser {
         // PossibleMatch
 
         if possible_match.n_consumed_tokens > possible_match.raw_value_length {
-            panic!(
-                "Consumed more tokens than are available: {:?}",
-                possible_match
-            )
+            return Err(PossibleMatchRootError::PossibleMatchConsumedError {
+                possible_match: possible_match.clone(),
+            }).map_err(|cause| FindPossibleMatchRootError::PossibleMatchRootError(cause));
         }
 
         if check_threshold(
@@ -554,11 +631,12 @@ impl Parser {
             matches_heap.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let last_token_in_resolution = otokens
-            .iter()
-            .position(|e| *e == value)
-            .ok_or_else(|| format_err!("Tokens list should contain value but doesn't"))
-            .unwrap();
+        let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
+            FindPossibleMatchRootError::MissingTokenFromList {
+                token_list: otokens.clone(),
+                value,
+            }
+        })?;
         *possible_match = PossibleMatch {
             resolved_value: *res_val,
             range: range_start..range_end,
@@ -569,6 +647,7 @@ impl Parser {
             n_consumed_tokens: 1,
             rank: *rank,
         };
+        Ok(())
     }
 
     /// when we insert a new possible match, we need to backtrack to check if the value did not
@@ -582,13 +661,14 @@ impl Parser {
         token_idx: usize,
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
-    ) -> GazetteerParserResult<Option<PossibleMatch>> {
+    ) -> Result<Option<PossibleMatch>, FindPossibleMatchRootError> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
-        let last_token_in_resolution = otokens
-            .iter()
-            .position(|e| *e == value)
-            .ok_or_else(|| format_err!("Tokens list should contain value but doesn't"))
-            .unwrap();
+        let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
+            FindPossibleMatchRootError::MissingTokenFromList {
+                token_list: otokens.clone(),
+                value,
+            }
+        })?;
 
         let mut possible_match = PossibleMatch {
             resolved_value: *res_val,
@@ -628,7 +708,11 @@ impl Parser {
         // if we have already skipped more tokens than is permitted by the threshold condition,
         // there is no point in continuing
         if possible_match.raw_value_length < n_skips {
-            bail!("Skipped more tokens than are available: error")
+            return Err(FindPossibleMatchRootError::PossibleMatchRootError(
+                PossibleMatchRootError::PossibleMatchSkippedError {
+                    possible_match: possible_match,
+                },
+            ));
         }
         if check_threshold(
             possible_match.raw_value_length - n_skips,
@@ -642,10 +726,19 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> GazetteerParserResult<Vec<ParsedValue>> {
-
-        let matches_heap = self.find_possible_matches(input, self.threshold)?;
-        let parsing = self.parse_input(input, matches_heap)?;
+    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>, RunError> {
+        let matches_heap = self
+            .find_possible_matches(input, self.threshold)
+            .map_err(|cause| RunError {
+                input: input.to_string(),
+                cause: RunRootError::FindPossibleMatchError(cause),
+            })?;
+        let parsing = self
+            .parse_input(input, matches_heap)
+            .map_err(|cause| RunError {
+                input: input.to_string(),
+                cause: RunRootError::ParseInputError(cause),
+            })?;
         Ok(parsing)
     }
 
@@ -654,44 +747,47 @@ impl Parser {
         self.threshold = threshold;
     }
 
-    fn reduce_possible_match(input: &str, possible_match: PossibleMatch, overlapping_tokens: HashSet<usize>) -> Option<PossibleMatch> {
+    fn reduce_possible_match(
+        input: &str,
+        possible_match: PossibleMatch,
+        overlapping_tokens: HashSet<usize>,
+    ) -> Option<PossibleMatch> {
         let mut reduced_possible_match: Option<PossibleMatch> = None;
         for (token_idx, (token_range, _)) in whitespace_tokenizer(input).enumerate() {
-            if possible_match.tokens_range.start < token_idx && possible_match.tokens_range.end > token_idx && !overlapping_tokens.contains(&token_idx) {
-
+            if possible_match.tokens_range.start < token_idx
+                && possible_match.tokens_range.end > token_idx
+                && !overlapping_tokens.contains(&token_idx)
+            {
                 if let Some(ref mut current_possible_match) = reduced_possible_match {
                     current_possible_match.range.end = token_range.end;
                     current_possible_match.tokens_range.end = token_idx + 1;
                     current_possible_match.n_consumed_tokens += 1;
-                    continue
+                    continue;
                 }
 
-                reduced_possible_match =
-                    Some(PossibleMatch {
-                        resolved_value: possible_match.resolved_value,
-                        range: token_range,
-                        tokens_range: token_idx..token_idx + 1,
-                        raw_value_length: possible_match.resolved_value,
-                        n_consumed_tokens: 1,
-                        last_token_in_input: 0,  // we are not going to need this one
-                        last_token_in_resolution: 0,  // we are not going to need this one
-                        rank: possible_match.rank,
-                    })
+                reduced_possible_match = Some(PossibleMatch {
+                    resolved_value: possible_match.resolved_value,
+                    range: token_range,
+                    tokens_range: token_idx..token_idx + 1,
+                    raw_value_length: possible_match.resolved_value,
+                    n_consumed_tokens: 1,
+                    last_token_in_input: 0, // we are not going to need this one
+                    last_token_in_resolution: 0, // we are not going to need this one
+                    rank: possible_match.rank,
+                })
             }
         }
         reduced_possible_match
     }
 
-
     fn parse_input(
         &self,
         input: &str,
         mut matches_heap: BinaryHeap<PossibleMatch>,
-    ) -> GazetteerParserResult<Vec<ParsedValue>> {
+    ) -> Result<Vec<ParsedValue>, ParseInputError> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
-
 
         'outer: while !matches_heap.is_empty() && taken_tokens.len() < n_total_tokens {
             let possible_match = matches_heap.pop().unwrap();
@@ -710,22 +806,26 @@ impl Parser {
             };
 
             if !overlapping_tokens.is_empty() {
-                let reduced_possible_matches = Self::reduce_possible_match(input, possible_match, overlapping_tokens);
+                let reduced_possible_matches =
+                    Self::reduce_possible_match(input, possible_match, overlapping_tokens);
                 if let Some(reduced_possible_match) = reduced_possible_matches {
-                    let val_threshold = match self.edge_cases.contains(&reduced_possible_match.resolved_value) {
+                    let val_threshold = match self
+                        .edge_cases
+                        .contains(&reduced_possible_match.resolved_value)
+                    {
                         false => self.threshold,
                         true => 1.0,
                     };
                     if check_threshold(
                         reduced_possible_match.n_consumed_tokens,
-                        reduced_possible_match.raw_value_length - reduced_possible_match.n_consumed_tokens,
+                        reduced_possible_match.raw_value_length
+                            - reduced_possible_match.n_consumed_tokens,
                         val_threshold,
                     ) {
                         matches_heap.push(reduced_possible_match.clone());
                     }
-
                 }
-                continue 'outer
+                continue 'outer;
             }
 
             let range_start = possible_match.range.start;
@@ -739,7 +839,8 @@ impl Parser {
                     .collect(),
                 resolved_value: self
                     .resolved_symbol_table
-                    .find_index(&possible_match.resolved_value)?,
+                    .find_index(&possible_match.resolved_value)
+                    .map_err(|cause| ParseInputError { cause })?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -750,42 +851,110 @@ impl Parser {
         Ok(parsing.into_sorted_vec())
     }
 
-    fn get_parser_config(&self) -> GazetteerParserResult<ParserConfig> {
+    fn get_parser_config(&self) -> Result<ParserConfig, GetParserConfigError> {
         Ok(ParserConfig {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             threshold: self.threshold,
-            stop_words: self.get_stop_words()?,
-            edge_cases: self.get_edge_cases()?
+            stop_words: self
+                .get_stop_words()
+                .map_err(|cause| GetParserConfigError {
+                    cause: GetParserConfigRootError::GetStopWordsError(cause),
+                })?,
+            edge_cases: self
+                .get_edge_cases()
+                .map_err(|cause| GetParserConfigError {
+                    cause: GetParserConfigRootError::GetEdgeCasesError(cause),
+                })?,
         })
     }
 
     /// Dump the parser to a folder
-    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<()> {
-        fs::create_dir(folder_name.as_ref()).with_context(|_| {
-            format!(
-                "Cannot create resolver directory {:?}",
-                folder_name.as_ref()
-            )
-        })?;
-        let config = self.get_parser_config()?;
-        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))?;
-        serde_json::to_writer(writer, &config)?;
+    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<(), DumpError> {
+        fs::create_dir(folder_name.as_ref())
+            .map_err(|cause| SerializationError::Io {
+                path: folder_name.as_ref().to_path_buf(),
+                cause
+            })
+            .map_err(|cause| DumpError {
+                cause: DumpRootError::SerializationError(cause),
+            })?;
 
-        let mut writer = fs::File::create(folder_name.as_ref().join(config.parser_filename))?;
-        self.serialize(&mut Serializer::new(&mut writer))?;
+        let config = self.get_parser_config().map_err(|cause| DumpError {
+            cause: DumpRootError::GetParserConfigError(cause),
+        })?;
+
+        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))
+            .map_err(|cause| SerializationError::Io {
+                path: folder_name.as_ref().join(METADATA_FILENAME).to_path_buf(),
+                cause: cause,
+            })
+            .map_err(|cause| DumpError {
+                cause: DumpRootError::SerializationError(cause),
+            })?;
+
+        serde_json::to_writer(writer, &config)
+            .map_err(|cause| SerializationError::InvalidConfigFormat {
+                path: folder_name.as_ref().join(METADATA_FILENAME),
+                cause: cause,
+            })
+            .map_err(|cause| DumpError {
+                cause: DumpRootError::SerializationError(cause),
+            })?;
+
+        let parser_path = folder_name.as_ref().join(config.parser_filename);
+        let mut writer = fs::File::create(&parser_path)
+            .map_err(|cause| SerializationError::Io {
+                path: parser_path.clone(),
+                cause: cause,
+            })
+            .map_err(|cause| DumpError {
+                cause: DumpRootError::SerializationError(cause),
+            })?;
+
+        self.serialize(&mut Serializer::new(&mut writer))
+            .map_err(|cause| SerializationError::ParserSerializationError {
+                path: parser_path,
+                cause: cause,
+            })
+            .map_err(|cause| DumpError {
+                cause: DumpRootError::SerializationError(cause),
+            })?;
         Ok(())
     }
 
     /// Load a resolver from a folder
-    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> GazetteerParserResult<Parser> {
+    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser, LoadError> {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
-        let metadata_file = fs::File::open(&metadata_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))?;
-        let config: ParserConfig = serde_json::from_reader(metadata_file)?;
+        let metadata_file = fs::File::open(&metadata_path).map_err(|cause| LoadError {
+            cause: DeserializationError::Io {
+                path: metadata_path.clone(),
+                cause,
+            },
+        })?;
 
-        let reader = fs::File::open(folder_name.as_ref().join(config.parser_filename))?;
-        Ok(from_read(reader)?)
+        let config: ParserConfig =
+            serde_json::from_reader(metadata_file).map_err(|cause| LoadError {
+                cause: DeserializationError::ReadConfigError {
+                    path: metadata_path,
+                    cause: cause,
+                },
+            })?;
+
+        let parser_path = folder_name.as_ref().join(config.parser_filename);
+        let reader = fs::File::open(&parser_path).map_err(|cause| LoadError {
+            cause: DeserializationError::Io {
+                path: parser_path.clone(),
+                cause: cause,
+            },
+        })?;
+
+        Ok(from_read(reader).map_err(|cause| LoadError {
+            cause: DeserializationError::ParserDeserializationError {
+                path: parser_path,
+                cause: cause,
+            },
+        })?)
     }
 }
 
@@ -800,9 +969,10 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use data::EntityValue;
-    use std::time::Instant;
-    use parser_builder::ParserBuilder;
     use data::Gazetteer;
+    use failure::ResultExt;
+    use parser_builder::ParserBuilder;
+    use std::time::Instant;
 
     #[test]
     fn test_seralization_deserialization() {
@@ -822,7 +992,9 @@ mod tests {
         });
         let parser = ParserBuilder::new(gazetteer, 0.5)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello".to_string()]).build().unwrap();
+            .additional_stop_words(vec!["hello".to_string()])
+            .build()
+            .unwrap();
         parser.dump(tdir.as_ref().join("parser")).unwrap();
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 
@@ -831,7 +1003,8 @@ mod tests {
         // check content of metadata
         let metadata_path = tdir.as_ref().join("parser").join(METADATA_FILENAME);
         let metadata_file = fs::File::open(&metadata_path)
-            .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path)).unwrap();
+            .with_context(|_| format!("Cannot open metadata file {:?}", metadata_path))
+            .unwrap();
         let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
 
         assert_eq!(config.threshold, 0.5);
@@ -870,7 +1043,9 @@ mod tests {
 
         let mut parser = ParserBuilder::new(gazetteer, 0.5)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello".to_string()]).build().unwrap();
+            .additional_stop_words(vec!["hello".to_string()])
+            .build()
+            .unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -963,7 +1138,9 @@ mod tests {
         assert_eq!(parsed, vec![]);
 
         // Sentence containing an additional stop word which is absent from the gazetteer
-        let parsed = parser.run("hello I want to listen to the rolling stones").unwrap();
+        let parsed = parser
+            .run("hello I want to listen to the rolling stones")
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1102,7 +1279,6 @@ mod tests {
 
     #[test]
     fn test_parser_with_ranking() {
-
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "Jacques Brel".to_string(),
@@ -1357,7 +1533,9 @@ mod tests {
         }];
 
         // Test with preprend set to false
-        parser.inject_new_values(new_values.clone(), false, false).unwrap();
+        parser
+            .inject_new_values(new_values.clone(), false, false)
+            .unwrap();
         let parsed = parser.run("je veux écouter les flying stones").unwrap();
 
         assert_eq!(
@@ -1421,9 +1599,7 @@ mod tests {
             raw_value: "the flying stones".to_string(),
         }];
 
-        parser
-            .inject_new_values(new_values_1, true, false)
-            .unwrap();
+        parser.inject_new_values(new_values_1, true, false).unwrap();
 
         // Test injection from vanilla
         let new_values_2 = vec![EntityValue {
@@ -1464,14 +1640,10 @@ mod tests {
         assert_eq!(
             parser
                 .resolved_symbol_table
-                .find_symbol("The Flying Stones")
-                .unwrap(),
+                .find_symbol("The Flying Stones"),
             None
         );
-        assert_eq!(
-            parser.tokens_symbol_table.find_symbol("flying").unwrap(),
-            None
-        );
+        assert_eq!(parser.tokens_symbol_table.find_symbol("flying"), None);
         assert!(!parser.token_to_count.contains_key(&flying_idx));
         assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
         assert!(
@@ -1502,10 +1674,10 @@ mod tests {
         let mut parser = ParserBuilder::new(gazetteer.clone(), 0.0)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
-            .build().unwrap();
+            .build()
+            .unwrap();
 
-        let parser_no_stop_words = ParserBuilder::new(gazetteer, 0.0)
-            .build().unwrap();
+        let parser_no_stop_words = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -1621,8 +1793,7 @@ mod tests {
             raw_value: "six seven".to_string(),
         });
 
-        let parser = ParserBuilder::new(gazetteer, 0.5)
-            .build().unwrap();
+        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
 
         let parsed = parser
             .run("je veux écouter le black and white album")
@@ -1664,7 +1835,9 @@ mod tests {
             ]
         );
 
-        let parsed = parser.run("zero one two three four five six seven").unwrap();
+        let parsed = parser
+            .run("zero one two three four five six seven")
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1691,7 +1864,8 @@ mod tests {
         let n_stop_words = 50;
         let mut parser = ParserBuilder::new(gaz, 0.6)
             .n_stop_words(n_stop_words)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -1721,7 +1895,8 @@ mod tests {
         let n_stop_words = 50;
         let mut parser = ParserBuilder::new(gaz, 0.6)
             .n_stop_words(n_stop_words)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let parsed = parser
             .run("je veux écouter le black and white album")
@@ -1771,20 +1946,22 @@ mod tests {
     #[test]
     fn test_real_word_injection() {
         // Real-world artist gazetteer
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
         let mut parser_for_test = ParserBuilder::new(album_gaz.clone(), 0.6)
             .n_stop_words(50)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let mut parser = ParserBuilder::new(album_gaz, 0.6)
             .n_stop_words(50)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Get 10k values from the album gazetter to inject in the album parser
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
         let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         new_values.truncate(10000);
 

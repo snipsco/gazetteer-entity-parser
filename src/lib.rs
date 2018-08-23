@@ -80,9 +80,9 @@ extern crate serde_derive;
 mod constants;
 mod data;
 mod parser;
+mod parser_builder;
 mod symbol_table;
 mod utils;
-mod parser_builder;
 
 pub use data::{EntityValue, Gazetteer};
 pub use parser::{ParsedValue, Parser};
