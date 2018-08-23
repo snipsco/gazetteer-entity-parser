@@ -6,25 +6,28 @@ use std::path::PathBuf;
 
 
 #[derive(Debug, Fail, Clone)]
+#[fail(
+    display = "Symbol {} is already present several times in the symbol table, cannot
+    determine which index to return. If this error is raised when adding a symbol, you may
+    want to try to force add the symbol.",
+    symbol
+)]
+pub struct DuplicateSymbolError { pub symbol: String }
+
+#[derive(Debug, Fail, Clone)]
 pub enum SymbolTableAddSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(
-        display = "Symbol {} is already present several times in the symbol table, cannot determine which index to return. If this error is raised when adding a symbol, you may want to try to force add the symbol.",
-        symbol
-    )]
-    DuplicateSymbolError { symbol: String },
+    #[fail(display="")]
+    DuplicateSymbolError(DuplicateSymbolError),
 }
 
 #[derive(Debug, Fail, Clone)]
 pub enum SymbolTableFindSingleSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(
-        display = "Symbol {} is already present several times in the symbol table, cannot determine which index to return. If this error is raised when adding a symbol, you may want to try to force add the symbol.",
-        symbol
-    )]
-    DuplicateSymbolError { symbol: String },
+    #[fail(display = "")]
+    DuplicateSymbolError(DuplicateSymbolError),
 }
 
 #[derive(Debug, Fail, Clone)]

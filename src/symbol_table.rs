@@ -94,7 +94,9 @@ impl GazetteerParserSymbolTable {
                 }
             })?;
             if indices.len() > 1 {
-                return Err(SymbolTableAddSymbolError::DuplicateSymbolError { symbol });
+                return Err(SymbolTableAddSymbolError::DuplicateSymbolError(DuplicateSymbolError {
+                    symbol})
+                );
             }
             Ok(*indices
                 .first()
@@ -146,9 +148,9 @@ impl GazetteerParserSymbolTable {
                 })
             }
             Some(vec) if vec.len() > 0 => {
-                return Err(SymbolTableFindSingleSymbolError::DuplicateSymbolError {
-                    symbol: symbol.to_string(),
-                })
+                return Err(SymbolTableFindSingleSymbolError::DuplicateSymbolError(DuplicateSymbolError {
+                    symbol: symbol.to_string()}),
+                )
             }
             _ => Ok(None),
         }
