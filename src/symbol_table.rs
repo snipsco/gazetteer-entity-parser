@@ -89,8 +89,7 @@ impl GazetteerParserSymbolTable {
                 .string_to_indices
                 .get(&symbol)
                 .ok_or_else(|| SymbolTableAddSymbolError::MissingKeyError {
-                    key: symbol.clone(),
-                    collection: "symbol table".to_string()
+                    key: symbol.clone()
                 })?;
             if indices.len() > 1 {
                 return Err(
@@ -101,8 +100,7 @@ impl GazetteerParserSymbolTable {
             }
             Ok(*indices.first().ok_or_else(||
                 SymbolTableAddSymbolError::MissingKeyError {
-                    key: symbol,
-                    collection: "symbol table".to_string()
+                    key: symbol
                 })?
             )
         }
@@ -140,20 +138,19 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Find the unique index of a symbol, and raise an error if it has more than one index
-    pub fn find_single_symbol(&self, symbol: &str) -> GazetteerParserResult<Option<u32>, GazetteerParserRootError> {
+    pub fn find_single_symbol(&self, symbol: &str) -> GazetteerParserResult<Option<u32>, SymbolTableFindSingleSymbolError> {
         match self.find_symbol(symbol) {
             Some(vec) if vec.len() == 1 => Ok(Some(*vec.first().unwrap())),
             Some(vec) if vec.len() == 0 => {
                 return Err(
-                    GazetteerParserRootError::MissingKeyError {
-                        key: symbol.to_string(),
-                        collection: "symbol table".to_string()
+                    SymbolTableFindSingleSymbolError::MissingKeyError {
+                        key: symbol.to_string()
                     }
                 )
             },
             Some(vec) if vec.len() > 0 => {
                 return Err(
-                    GazetteerParserRootError::DuplicateSymbolError {
+                    SymbolTableFindSingleSymbolError::DuplicateSymbolError {
                         symbol: symbol.to_string()
                     }
                 )
@@ -163,14 +160,13 @@ impl GazetteerParserSymbolTable {
     }
 
     /// Find the unique symbol corresponding to an index in the symbol table
-    pub fn find_index(&self, idx: &u32) -> GazetteerParserResult<String, GazetteerParserRootError> {
+    pub fn find_index(&self, idx: &u32) -> GazetteerParserResult<String, SymbolTableFindIndexError> {
         let symb = self
             .index_to_string
             .get(idx)
             .ok_or_else(||
-                GazetteerParserRootError::MissingKeyError {
-                    key: idx.to_string(),
-                    collection: "symbol table".to_string()
+                SymbolTableFindIndexError::MissingKeyError {
+                    key: *idx
                 }
             )?;
         Ok(symb.to_string())

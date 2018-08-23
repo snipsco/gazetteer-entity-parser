@@ -8,14 +8,49 @@ pub type GazetteerParserResult<T, E> = ::std::result::Result<T, E>;
 
 #[derive(Debug, Fail, Clone)]
 pub enum SymbolTableAddSymbolError {
-    #[fail(display = "Key {} missing from collection {}", key, collection)]
+    #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError {
-        key: String,
-        collection: String
+        key: String
     },
     #[fail(display = "Symbol {} is already present several times in the symbol table, cannot determine which index to return. If this error is raised when adding a symbol, you may want to try to force add the symbol.", symbol)]
     DuplicateSymbolError {
         symbol: String
+    }
+}
+
+#[derive(Debug, Fail, Clone)]
+pub enum SymbolTableFindSingleSymbolError {
+    #[fail(display = "Key {} missing from symbol table", key)]
+    MissingKeyError {
+        key: String
+    },
+    #[fail(display = "Symbol {} is already present several times in the symbol table, cannot determine which index to return. If this error is raised when adding a symbol, you may want to try to force add the symbol.", symbol)]
+    DuplicateSymbolError {
+        symbol: String
+    }
+}
+
+#[derive(Debug, Fail, Clone)]
+pub enum SymbolTableFindIndexError {
+    #[fail(display = "Index {} missing from symbol table", key)]
+    MissingKeyError {
+        key: u32
+    }
+}
+
+#[derive(Debug, Fail, Clone)]
+pub enum TokensFromResolvedValueError {
+    #[fail(display = "Key {} missing from tokens to resolved value table", key)]
+    MissingKeyError {
+        key: u32
+    }
+}
+
+#[derive(Debug, Fail, Clone)]
+pub enum ResolvedValuesFromTokenError {
+    #[fail(display = "Key {} missing from tokens to resolved value table", key)]
+    MissingKeyError {
+        key: u32
     }
 }
 
@@ -45,22 +80,33 @@ pub struct SetStopWordsError {
 #[fail(display = "Failed to get stop words")]
 pub struct GetStopWordsError {
     #[cause]
-    pub cause: GazetteerParserRootError
+    pub cause: SymbolTableFindIndexError
 }
 
 #[derive(Debug, Fail)]
 #[fail(display = "Failed to get edge cases")]
 pub struct GetEdgeCasesError {
     #[cause]
-    pub cause: GazetteerParserRootError
+    pub cause: SymbolTableFindIndexError
 }
 
 #[derive(Debug, Fail)]
 pub enum InjectionRootError {
     #[fail(display = "")]
-    GazetteerParserRootError(
+    TokensFromResolvedValueError(
         #[cause]
-        GazetteerParserRootError),
+        TokensFromResolvedValueError
+    ),
+    #[fail(display = "")]
+    ResolvedValuesFromTokenError(
+        #[cause]
+        ResolvedValuesFromTokenError
+    ),
+    #[fail(display = "")]
+    SymbolTableFindIndexError(
+        #[cause]
+        SymbolTableFindIndexError
+    ),
     #[fail(display = "")]
     AddValueError(
         #[cause]
@@ -80,16 +126,25 @@ pub struct InjectionError {
 
 #[derive(Debug, Fail)]
 pub enum FindPossibleMatchRootError {
-    #[fail(display = "")]
-    GazetteerParserRootError(
-        #[cause]
-        GazetteerParserRootError),
+    #[fail(display = "Tokens list {:?} should contain value {} but doesn't", token_list, value)]
+    MissingTokenFromList {
+        token_list: Vec<u32>,
+        value: u32
+    },
     #[fail(display = "")]
     PossibleMatchRootError(
         #[cause]
-        PossibleMatchRootError)
+        PossibleMatchRootError),
+    #[fail(display = "")]
+    SymbolTableFindSingleSymbolError(
+        #[cause]
+        SymbolTableFindSingleSymbolError),
+        #[fail(display = "")]
+    ResolvedValuesFromTokenError(
+        #[cause]
+        ResolvedValuesFromTokenError
+    )
 }
-
 
 #[derive(Debug, Fail)]
 #[fail(display = "Error finding possible matches")]
@@ -98,16 +153,11 @@ pub struct FindPossibleMatchError {
     pub cause: FindPossibleMatchRootError
 }
 
-// #[derive(Debug, Fail)]
-// pub enum ParseInputRootError {
-//     GazetteerParserRootError(GazetteerParserRootError)
-// }
-
 #[derive(Debug, Fail)]
 #[fail(display = "Error parsing input")]
 pub struct ParseInputError {
     #[cause]
-    pub cause: GazetteerParserRootError
+    pub cause: SymbolTableFindIndexError
 }
 
 #[derive(Debug, Fail)]
@@ -155,9 +205,9 @@ pub enum DumpRootError {
         #[cause]
         GetParserConfigError),
     #[fail(display = "")]
-    GazetteerParserRootError(
+    SerializationError(
         #[cause]
-        GazetteerParserRootError)
+        SerializationError)
 }
 
 #[derive(Debug, Fail)]
@@ -171,7 +221,7 @@ pub struct DumpError {
 #[fail(display = "Error loading parser")]
 pub struct LoadError {
     #[cause]
-    pub cause: GazetteerParserRootError
+    pub cause: DeserializationError
 }
 
 #[derive(Debug, Fail)]
@@ -197,25 +247,8 @@ pub struct BuildError {
 #[fail(display = "Error loading gazetteer")]
 pub struct GazetteerLoadingError {
     #[cause]
-    pub cause: GazetteerParserRootError
+    pub cause: DeserializationError
 }
-
-
-/// Higher-level errors
-// #[derive(Debug, Fail)]
-// pub enum GazetteerParserError {
-//
-//     #[fail(display = "Failed to add value to the parser: {:?}", entity_value)]
-//     AddValueError {
-//         entity_value: EntityValue,
-//         #[cause]
-//         cause: GazetteerParserErrorKind
-//     }
-// }
-
-// One struct deriving fail per high level error
-// cause: GazetterParserLowLevelError (qui est un enum)
-
 
 
 /// Low-level errors
@@ -233,21 +266,7 @@ pub enum PossibleMatchRootError {
 }
 
 #[derive(Debug, Fail)]
-pub enum GazetteerParserRootError {
-    #[fail(display = "Key {} missing from collection {}", key, collection)]
-    MissingKeyError {
-        key: String,
-        collection: String
-    },
-    #[fail(display = "Symbol {} is already present several times in the symbol table, cannot determine which index to return. If this error is raised when adding a symbol, you may want to try to force add the symbol.", symbol)]
-    DuplicateSymbolError {
-        symbol: String
-    },
-    #[fail(display = "Tokens list {:?} should contain value {} but doesn't", token_list, value)]
-    MissingTokenFromList {
-        token_list: Vec<u32>,
-        value: u32
-    },
+pub enum SerializationError {
     #[fail(display = "Io error {:?}", path)]
     Io {
         path: PathBuf,
@@ -260,17 +279,27 @@ pub enum GazetteerParserRootError {
         #[cause]
         cause: serde_json::Error,
     },
-    #[fail(display = "Unable to read JSON config at {:?}", path)]
-    ReadConfigError {
-        path: PathBuf,
-        #[cause]
-        cause: serde_json::Error,
-    },
     #[fail(display = "Unable to serialize Parser to {:?}", path)]
     ParserSerializationError {
         path: PathBuf,
         #[cause]
         cause: rmps::encode::Error
+    }
+}
+
+#[derive(Debug, Fail)]
+pub enum DeserializationError {
+    #[fail(display = "Io error {:?}", path)]
+    Io {
+        path: PathBuf,
+        #[cause]
+        cause: io::Error,
+    },
+    #[fail(display = "Unable to read JSON config at {:?}", path)]
+    ReadConfigError {
+        path: PathBuf,
+        #[cause]
+        cause: serde_json::Error,
     },
     #[fail(display = "Unable to deserialize Parser to {:?}", path)]
     ParserDeserializationError {

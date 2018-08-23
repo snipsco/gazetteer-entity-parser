@@ -139,7 +139,7 @@ impl Parser {
             .resolved_symbol_table
            .add_symbol(resolved_value, true).map_err(
                |cause| match cause.clone() {
-                   SymbolTableAddSymbolError::MissingKeyError {key: k, collection: _} | SymbolTableAddSymbolError::DuplicateSymbolError {symbol: k} => AddValueError {
+                   SymbolTableAddSymbolError::MissingKeyError {key: k} | SymbolTableAddSymbolError::DuplicateSymbolError {symbol: k} => AddValueError {
                        kind: AddValueErrorKind::ResolvedValue, value: k , cause }
                }
            )?;
@@ -298,7 +298,7 @@ impl Parser {
                     for res_val in res_val_indices {
                         let (_, tokens) = self.get_tokens_from_resolved_value(&res_val).map_err(
                             |cause| InjectionError {
-                                cause: InjectionRootError::GazetteerParserRootError(cause)
+                                cause: InjectionRootError::TokensFromResolvedValueError(cause)
                             }
                         )?.clone();
                         self.resolved_value_to_tokens.remove(&res_val);
@@ -309,7 +309,7 @@ impl Parser {
                             // Check the remaining resolved values containing the token
                             if self.get_resolved_values_from_token(&tok).map_err(
                                 |cause| InjectionError {
-                                    cause: InjectionRootError::GazetteerParserRootError(cause)
+                                    cause: InjectionRootError::ResolvedValuesFromTokenError(cause)
                                 }
                             )?.is_empty() {
                                 tokens_marked_for_removal.insert(tok);
@@ -322,7 +322,7 @@ impl Parser {
                 let tok = self.tokens_symbol_table.find_index(&tok_idx).map_err(
                     |cause| {
                         InjectionError {
-                            cause: InjectionRootError::GazetteerParserRootError(cause)
+                            cause: InjectionRootError::SymbolTableFindIndexError(cause)
                         }
                     }
                 )?;
@@ -378,26 +378,24 @@ impl Parser {
     fn get_tokens_from_resolved_value(
         &self,
         resolved_value: &u32,
-    ) -> GazetteerParserResult<&(u32, Vec<u32>), GazetteerParserRootError> {
+    ) -> GazetteerParserResult<&(u32, Vec<u32>), TokensFromResolvedValueError> {
         Ok(self
             .resolved_value_to_tokens
             .get(resolved_value)
             .ok_or_else(||
-                GazetteerParserRootError::MissingKeyError {
-                    key: resolved_value.to_string(),
-                    collection: "resolved_value_to_tokens".to_string()
+                TokensFromResolvedValueError::MissingKeyError {
+                    key: *resolved_value
                 }
         )?)
     }
 
     /// get resolved values from token
-    fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>, GazetteerParserRootError> {
+    fn get_resolved_values_from_token(&self, token: &u32) -> GazetteerParserResult<&HashSet<u32>, ResolvedValuesFromTokenError> {
         Ok(self
             .token_to_resolved_values
             .get(token)
-            .ok_or_else(|| GazetteerParserRootError::MissingKeyError {
-                key: token.to_string(),
-                collection: "token_to_resolved_values".to_string()
+            .ok_or_else(|| ResolvedValuesFromTokenError::MissingKeyError {
+                key: *token
             })?)
     }
 
@@ -419,14 +417,14 @@ impl Parser {
             let range_end = range.end;
             match self.tokens_symbol_table.find_single_symbol(&token).map_err(
                 |cause| FindPossibleMatchError {
-                    cause: FindPossibleMatchRootError::GazetteerParserRootError(cause)
+                    cause: FindPossibleMatchRootError::SymbolTableFindSingleSymbolError(cause)
                 }
             )? {
                 Some(value) => {
                     if !self.stop_words.contains(&value) {
                         for res_val in self.get_resolved_values_from_token(&value).map_err(
                             |cause| FindPossibleMatchError {
-                                cause: FindPossibleMatchRootError::GazetteerParserRootError(cause)
+                                cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(cause)
                             }
                         )? {
                             let entry = possible_matches.entry(*res_val);
@@ -468,9 +466,7 @@ impl Parser {
                         // Iterate over all edge cases and try to add or update corresponding
                         // PossibleMatch's. Using a threshold of 1.
                         let res_vals_from_token = self.get_resolved_values_from_token(&value).map_err(
-                            |cause| FindPossibleMatchError {
-                                cause: FindPossibleMatchRootError::GazetteerParserRootError(cause)
-                            }
+                            |cause| FindPossibleMatchError { cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(cause) }
                         )?;
                         for res_val in &self.edge_cases {
                             if res_vals_from_token.contains(&res_val) {
@@ -628,13 +624,9 @@ impl Parser {
             .iter()
             .position(|e| *e == value)
             .ok_or_else(||
-                {
-                    let cause =
-                    GazetteerParserRootError::MissingTokenFromList {
+                    FindPossibleMatchRootError::MissingTokenFromList {
                         token_list: otokens.clone(),
                         value
-                    };
-                    FindPossibleMatchRootError::GazetteerParserRootError(cause)
                 }
             )?;
         *possible_match = PossibleMatch {
@@ -667,13 +659,9 @@ impl Parser {
             .iter()
             .position(|e| *e == value)
             .ok_or_else(||
-                {
-                    let cause =
-                    GazetteerParserRootError::MissingTokenFromList {
+                    FindPossibleMatchRootError::MissingTokenFromList {
                     token_list: otokens.clone(),
                     value
-                };
-                FindPossibleMatchRootError::GazetteerParserRootError(cause)
                 }
             )?;
 
@@ -867,12 +855,12 @@ impl Parser {
 
     /// Dump the parser to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> GazetteerParserResult<(), DumpError> {
-        fs::create_dir(folder_name.as_ref()).map_err(|cause| GazetteerParserRootError::Io {
+        fs::create_dir(folder_name.as_ref()).map_err(|cause| SerializationError::Io {
             path: folder_name.as_ref().to_path_buf(),
             cause: cause
         }).map_err(
             |cause| DumpError {
-                cause: DumpRootError::GazetteerParserRootError(cause)
+                cause: DumpRootError::SerializationError(cause)
             }
         )?;
 
@@ -882,40 +870,40 @@ impl Parser {
             }
         )?;
 
-        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME)).map_err(|cause| GazetteerParserRootError::Io {
+        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME)).map_err(|cause| SerializationError::Io {
             path: folder_name.as_ref().join(METADATA_FILENAME).to_path_buf(),
             cause: cause
         }).map_err(
             |cause| DumpError {
-                cause: DumpRootError::GazetteerParserRootError(cause)
+                cause: DumpRootError::SerializationError(cause)
             }
         )?;
 
-        serde_json::to_writer(writer, &config).map_err(|cause| GazetteerParserRootError::InvalidConfigFormat {
+        serde_json::to_writer(writer, &config).map_err(|cause| SerializationError::InvalidConfigFormat {
             path: folder_name.as_ref().join(METADATA_FILENAME),
             cause: cause
         }).map_err(
             |cause| DumpError {
-                cause: DumpRootError::GazetteerParserRootError(cause)
+                cause: DumpRootError::SerializationError(cause)
             }
         )?;
 
         let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let mut writer = fs::File::create(&parser_path).map_err(|cause| GazetteerParserRootError::Io {
+        let mut writer = fs::File::create(&parser_path).map_err(|cause| SerializationError::Io {
             path: parser_path.clone(),
             cause: cause
         }).map_err(
             |cause| DumpError {
-                cause: DumpRootError::GazetteerParserRootError(cause)
+                cause: DumpRootError::SerializationError(cause)
             }
         )?;
 
-        self.serialize(&mut Serializer::new(&mut writer)).map_err(|cause| GazetteerParserRootError::ParserSerializationError {
+        self.serialize(&mut Serializer::new(&mut writer)).map_err(|cause| SerializationError::ParserSerializationError {
             path: parser_path,
             cause: cause
         }).map_err(
             |cause| DumpError {
-                cause: DumpRootError::GazetteerParserRootError(cause)
+                cause: DumpRootError::SerializationError(cause)
             }
         )?;
         Ok(())
@@ -926,14 +914,14 @@ impl Parser {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
         let metadata_file = fs::File::open(&metadata_path).map_err(
                 |cause| LoadError{
-                    cause: GazetteerParserRootError::Io{
+                    cause: DeserializationError::Io{
                     path: metadata_path.clone(),
                     cause}}
             )?;
 
         let config: ParserConfig = serde_json::from_reader(metadata_file).map_err(
             |cause| LoadError{
-                cause: GazetteerParserRootError::ReadConfigError{
+                cause: DeserializationError::ReadConfigError{
                 path: metadata_path,
                 cause: cause
             }}
@@ -942,7 +930,7 @@ impl Parser {
         let parser_path = folder_name.as_ref().join(config.parser_filename);
         let reader = fs::File::open(&parser_path).map_err(
             |cause| LoadError{
-                cause: GazetteerParserRootError::Io {
+                cause: DeserializationError::Io {
                     path: parser_path.clone(),
                     cause: cause
                 }
@@ -951,7 +939,7 @@ impl Parser {
 
         Ok(from_read(reader).map_err(
             |cause| LoadError {
-                cause: GazetteerParserRootError::ParserDeserializationError {
+                cause: DeserializationError::ParserDeserializationError {
                     path: parser_path,
                     cause: cause
                 }
