@@ -874,7 +874,7 @@ impl Parser {
         fs::create_dir(folder_name.as_ref())
             .map_err(|cause| SerializationError::Io {
                 path: folder_name.as_ref().to_path_buf(),
-                cause: cause,
+                cause
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
