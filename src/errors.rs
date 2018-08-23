@@ -138,8 +138,9 @@ pub enum RunRootError {
 }
 
 #[derive(Debug, Fail)]
-#[fail(display = "Error running parser")]
+#[fail(display = "Error running parser on input string {}", input)]
 pub struct RunError {
+    pub input: String,
     #[cause]
     pub cause: RunRootError,
 }

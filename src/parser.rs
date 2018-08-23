@@ -729,11 +729,13 @@ impl Parser {
         let matches_heap = self
             .find_possible_matches(input, self.threshold)
             .map_err(|cause| RunError {
+                input: input.to_string(),
                 cause: RunRootError::FindPossibleMatchError(cause),
             })?;
         let parsing = self
             .parse_input(input, matches_heap)
             .map_err(|cause| RunError {
+                input: input.to_string(),
                 cause: RunRootError::ParseInputError(cause),
             })?;
         Ok(parsing)
