@@ -26,7 +26,7 @@ pub enum SymbolTableAddSymbolError {
 pub enum SymbolTableFindSingleSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     DuplicateSymbolError(DuplicateSymbolError),
 }
 
@@ -86,15 +86,15 @@ pub struct GetEdgeCasesError {
 
 #[derive(Debug, Fail)]
 pub enum InjectionRootError {
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     TokensFromResolvedValueError(#[cause] TokensFromResolvedValueError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     ResolvedValuesFromTokenError(#[cause] ResolvedValuesFromTokenError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     SymbolTableFindIndexError(#[cause] SymbolTableFindIndexError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     AddValueError(#[cause] AddValueError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     SetStopWordsError(#[cause] SetStopWordsError),
 }
 
@@ -109,11 +109,11 @@ pub struct InjectionError {
 pub enum FindPossibleMatchRootError {
     #[fail(display = "Tokens list {:?} should contain value {} but doesn't", token_list, value)]
     MissingTokenFromList { token_list: Vec<u32>, value: u32 },
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     PossibleMatchRootError(#[cause] PossibleMatchRootError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     SymbolTableFindSingleSymbolError(#[cause] SymbolTableFindSingleSymbolError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     ResolvedValuesFromTokenError(#[cause] ResolvedValuesFromTokenError),
 }
 
@@ -133,9 +133,9 @@ pub struct ParseInputError {
 
 #[derive(Debug, Fail)]
 pub enum RunRootError {
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     ParseInputError(#[cause] ParseInputError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     FindPossibleMatchError(#[cause] FindPossibleMatchError),
 }
 
@@ -149,9 +149,9 @@ pub struct RunError {
 
 #[derive(Debug, Fail)]
 pub enum GetParserConfigRootError {
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     GetStopWordsError(#[cause] GetStopWordsError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     GetEdgeCasesError(#[cause] GetEdgeCasesError),
 }
 
@@ -164,9 +164,9 @@ pub struct GetParserConfigError {
 
 #[derive(Debug, Fail)]
 pub enum DumpRootError {
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     GetParserConfigError(#[cause] GetParserConfigError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     SerializationError(#[cause] SerializationError),
 }
 
@@ -186,9 +186,9 @@ pub struct LoadError {
 
 #[derive(Debug, Fail)]
 pub enum BuildRootError {
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     AddValueError(#[cause] AddValueError),
-    #[fail(display = "")]
+    #[fail(display = "Caused by: ")]
     SetStopWordsError(#[cause] SetStopWordsError),
 }
 
