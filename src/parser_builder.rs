@@ -5,7 +5,7 @@ use std::result::Result;
 
 
 /// Struct exposing a builder allowing to configure and build a Parser
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct ParserBuilder {
     gazetteer: Gazetteer,
     threshold: f32,
@@ -71,6 +71,8 @@ impl ParserBuilder {
 mod tests {
     use super::*;
     use data::EntityValue;
+    use serde_json::Value;
+    use serde_json;
 
     #[test]
     fn test_parser_builder() {
@@ -100,5 +102,41 @@ mod tests {
         parser_manual.set_stop_words(2, Some(vec!["hello".to_string()])).unwrap();
 
         assert_eq!(parser_from_builder, parser_manual);
+    }
+
+    #[test]
+    fn test_serialization_deserialization() {
+        let test_serialization_str = r#"
+        {
+            "gazetteer": [
+                {
+                    "raw_value": "yolo",
+                    "resolved_value":"yala"
+                }
+            ],
+            "threshold": 0.6,
+            "n_gazetteer_stop_words": 30,
+            "additional_stop_words": ["hello", "world"]
+        }
+        "#;
+
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "yala".to_string(),
+            raw_value: "yolo".to_string(),
+        });
+        let builder = ParserBuilder::new(gazetteer, 0.6)
+            .n_stop_words(30)
+            .additional_stop_words(vec!["hello".to_string(), "world".to_string()]);
+
+        // Deserialize builder from string and assert result
+        let deserialized_builder: ParserBuilder = serde_json::from_str(test_serialization_str)
+            .unwrap();
+        assert_eq!(deserialized_builder, builder);
+
+        // Serialize builder to string and assert
+        let serialized_builder: Value = serde_json::from_str(&serde_json::to_string(&builder).unwrap()).unwrap();
+        let ground_true_serialized_builder: Value = serde_json::from_str(test_serialization_str).unwrap();
+        assert_eq!(serialized_builder, ground_true_serialized_builder);
     }
 }
