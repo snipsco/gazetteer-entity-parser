@@ -19,7 +19,11 @@ criterion = "0.2"
 rand = "0.5"
 tempfile = "3.0.2"
 mio_httpc = {version = "0.6", features = ["rtls"]}
+clap = "2"
 
 [[bench]]
 name = "bench_parser"
 harness = false
+
+[[example]]
+name = "demo_app"
