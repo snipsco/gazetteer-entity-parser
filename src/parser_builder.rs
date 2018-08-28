@@ -70,7 +70,6 @@ mod tests {
     use super::*;
     use data::EntityValue;
     use serde_json;
-    use serde_json::Value;
 
     #[test]
     fn test_parser_builder() {
@@ -108,20 +107,20 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization() {
-        let test_serialization_str = r#"
-        {
-            "gazetteer": [
-                {
-                    "raw_value": "yolo",
-                    "resolved_value":"yala"
-                }
-            ],
-            "threshold": 0.6,
-            "n_gazetteer_stop_words": 30,
-            "additional_stop_words": ["hello", "world"]
-        }
-        "#;
-
+        let test_serialization_str = r#"{
+  "gazetteer": [
+    {
+      "resolved_value": "yala",
+      "raw_value": "yolo"
+    }
+  ],
+  "threshold": 0.6,
+  "n_gazetteer_stop_words": 30,
+  "additional_stop_words": [
+    "hello",
+    "world"
+  ]
+}"#;
         let mut gazetteer = Gazetteer::new();
         gazetteer.add(EntityValue {
             resolved_value: "yala".to_string(),
@@ -137,10 +136,7 @@ mod tests {
         assert_eq!(deserialized_builder, builder);
 
         // Serialize builder to string and assert
-        let serialized_builder: Value =
-            serde_json::from_str(&serde_json::to_string(&builder).unwrap()).unwrap();
-        let ground_true_serialized_builder: Value =
-            serde_json::from_str(test_serialization_str).unwrap();
-        assert_eq!(serialized_builder, ground_true_serialized_builder);
+        let serialized_builder = serde_json::to_string_pretty(&builder).unwrap();
+        assert_eq!(serialized_builder, test_serialization_str);
     }
 }

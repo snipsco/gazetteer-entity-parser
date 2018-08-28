@@ -1,8 +1,6 @@
 use std::result::Result;
 
-use serde::Deserializer;
-use serde::Serializer;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Struct representing the value of an entity to be added to the parser
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -41,7 +39,7 @@ impl<'de> Deserialize<'de> for Gazetteer {
 }
 
 impl Gazetteer {
-    /// Instanciate a new empty gazetteer
+    /// Instantiate a new empty gazetteer
     pub fn new() -> Gazetteer {
         Gazetteer { data: Vec::new() }
     }

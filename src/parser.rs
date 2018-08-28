@@ -147,9 +147,7 @@ impl Parser {
             .add_symbol(resolved_value, true)
             .map_err(|cause| match cause.clone() {
                 SymbolTableAddSymbolError::MissingKeyError { key: k }
-                | SymbolTableAddSymbolError::DuplicateSymbolError {
-                    0: DuplicateSymbolError { symbol: k },
-                } => AddValueError {
+                | SymbolTableAddSymbolError::DuplicateSymbolError { symbol: k } => AddValueError {
                     kind: AddValueErrorKind::ResolvedValue,
                     value: k,
                     cause,

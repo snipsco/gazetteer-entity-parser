@@ -19,16 +19,24 @@ pub struct DuplicateSymbolError {
 pub enum SymbolTableAddSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(display = "")]
-    DuplicateSymbolError(DuplicateSymbolError),
+    #[fail(
+        display = "Symbol {} is already present several times in the symbol table, cannot
+        determine which index to return. You may want to try to force add the symbol.",
+        symbol
+    )]
+    DuplicateSymbolError { symbol: String },
 }
 
 #[derive(Debug, Fail, Clone)]
 pub enum SymbolTableFindSingleSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(display = "Caused by: ")]
-    DuplicateSymbolError(DuplicateSymbolError),
+    #[fail(
+        display = "Symbol {} is already present several times in the symbol table, cannot
+        determine which index to return.",
+        symbol
+    )]
+    DuplicateSymbolError { symbol: String },
 }
 
 #[derive(Debug, Fail, Clone)]
