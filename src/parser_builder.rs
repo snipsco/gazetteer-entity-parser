@@ -1,27 +1,25 @@
-use parser::Parser;
 use data::Gazetteer;
 use errors::*;
+use parser::Parser;
 use std::result::Result;
 
-
 /// Struct exposing a builder allowing to configure and build a Parser
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct ParserBuilder {
     gazetteer: Gazetteer,
     threshold: f32,
     n_gazetteer_stop_words: Option<usize>,
-    additional_stop_words: Option<Vec<String>>
+    additional_stop_words: Option<Vec<String>>,
 }
 
 impl ParserBuilder {
-
     /// Instantiate a new ParserBuilder with values for the non-optional attributes
     pub fn new(gazetteer: Gazetteer, threshold: f32) -> ParserBuilder {
         ParserBuilder {
             gazetteer,
             threshold,
             n_gazetteer_stop_words: None,
-            additional_stop_words: None
+            additional_stop_words: None,
         }
     }
 
@@ -43,25 +41,25 @@ impl ParserBuilder {
     pub fn build(self) -> Result<Parser, BuildError> {
         let mut parser = Parser::default();
         for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
-            parser.add_value(entity_value, rank as u32).map_err(
-                |cause| BuildError {
-                    cause: BuildRootError::AddValueError(cause)
-                }
-            )?;
+            parser
+                .add_value(entity_value, rank as u32)
+                .map_err(|cause| BuildError {
+                    cause: BuildRootError::AddValueError(cause),
+                })?;
         }
         parser.set_threshold(self.threshold);
         if let Some(n) = self.n_gazetteer_stop_words {
-            parser.set_stop_words(n, self.additional_stop_words).map_err(
-                |cause| BuildError {
-                    cause: BuildRootError::SetStopWordsError(cause)
-                }
-            )?;
+            parser
+                .set_stop_words(n, self.additional_stop_words)
+                .map_err(|cause| BuildError {
+                    cause: BuildRootError::SetStopWordsError(cause),
+                })?;
         } else if let Some(_) = self.additional_stop_words {
-            parser.set_stop_words(0, self.additional_stop_words).map_err(
-                |cause| BuildError {
-                    cause: BuildRootError::SetStopWordsError(cause)
-                }
-            )?;
+            parser
+                .set_stop_words(0, self.additional_stop_words)
+                .map_err(|cause| BuildError {
+                    cause: BuildRootError::SetStopWordsError(cause),
+                })?;
         }
         Ok(parser)
     }
@@ -71,6 +69,7 @@ impl ParserBuilder {
 mod tests {
     use super::*;
     use data::EntityValue;
+    use serde_json;
 
     #[test]
     fn test_parser_builder() {
@@ -90,15 +89,54 @@ mod tests {
 
         let parser_from_builder = ParserBuilder::new(gazetteer.clone(), 0.5)
             .n_stop_words(2)
-            .additional_stop_words(vec!["hello".to_string()]).build().unwrap();
+            .additional_stop_words(vec!["hello".to_string()])
+            .build()
+            .unwrap();
 
         let mut parser_manual = Parser::default();
         for (rank, entity_value) in gazetteer.data.into_iter().enumerate() {
             parser_manual.add_value(entity_value, rank as u32).unwrap();
         }
         parser_manual.set_threshold(0.5);
-        parser_manual.set_stop_words(2, Some(vec!["hello".to_string()])).unwrap();
+        parser_manual
+            .set_stop_words(2, Some(vec!["hello".to_string()]))
+            .unwrap();
 
         assert_eq!(parser_from_builder, parser_manual);
+    }
+
+    #[test]
+    fn test_serialization_deserialization() {
+        let test_serialization_str = r#"{
+  "gazetteer": [
+    {
+      "resolved_value": "yala",
+      "raw_value": "yolo"
+    }
+  ],
+  "threshold": 0.6,
+  "n_gazetteer_stop_words": 30,
+  "additional_stop_words": [
+    "hello",
+    "world"
+  ]
+}"#;
+        let mut gazetteer = Gazetteer::new();
+        gazetteer.add(EntityValue {
+            resolved_value: "yala".to_string(),
+            raw_value: "yolo".to_string(),
+        });
+        let builder = ParserBuilder::new(gazetteer, 0.6)
+            .n_stop_words(30)
+            .additional_stop_words(vec!["hello".to_string(), "world".to_string()]);
+
+        // Deserialize builder from string and assert result
+        let deserialized_builder: ParserBuilder =
+            serde_json::from_str(test_serialization_str).unwrap();
+        assert_eq!(deserialized_builder, builder);
+
+        // Serialize builder to string and assert
+        let serialized_builder = serde_json::to_string_pretty(&builder).unwrap();
+        assert_eq!(serialized_builder, test_serialization_str);
     }
 }

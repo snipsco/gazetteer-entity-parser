@@ -94,9 +94,7 @@ impl GazetteerParserSymbolTable {
                 }
             })?;
             if indices.len() > 1 {
-                return Err(SymbolTableAddSymbolError::DuplicateSymbolError(DuplicateSymbolError {
-                    symbol})
-                );
+                return Err(SymbolTableAddSymbolError::DuplicateSymbolError { symbol });
             }
             Ok(*indices
                 .first()
@@ -148,19 +146,16 @@ impl GazetteerParserSymbolTable {
                 })
             }
             Some(vec) if vec.len() > 0 => {
-                return Err(SymbolTableFindSingleSymbolError::DuplicateSymbolError(DuplicateSymbolError {
-                    symbol: symbol.to_string()}),
-                )
+                return Err(SymbolTableFindSingleSymbolError::DuplicateSymbolError {
+                    symbol: symbol.to_string(),
+                })
             }
             _ => Ok(None),
         }
     }
 
     /// Find the unique symbol corresponding to an index in the symbol table
-    pub fn find_index(
-        &self,
-        idx: &u32,
-    ) -> Result<String, SymbolTableFindIndexError> {
+    pub fn find_index(&self, idx: &u32) -> Result<String, SymbolTableFindIndexError> {
         let symb = self
             .index_to_string
             .get(idx)

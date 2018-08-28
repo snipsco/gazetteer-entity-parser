@@ -12,9 +12,9 @@ use std::collections::BinaryHeap;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
+use std::result::Result;
 use symbol_table::GazetteerParserSymbolTable;
 use utils::{check_threshold, whitespace_tokenizer};
-use std::result::Result;
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -147,7 +147,7 @@ impl Parser {
             .add_symbol(resolved_value, true)
             .map_err(|cause| match cause.clone() {
                 SymbolTableAddSymbolError::MissingKeyError { key: k }
-                | SymbolTableAddSymbolError::DuplicateSymbolError { 0: DuplicateSymbolError { symbol: k } } => AddValueError {
+                | SymbolTableAddSymbolError::DuplicateSymbolError { symbol: k } => AddValueError {
                     kind: AddValueErrorKind::ResolvedValue,
                     value: k,
                     cause,
@@ -874,7 +874,7 @@ impl Parser {
         fs::create_dir(folder_name.as_ref())
             .map_err(|cause| SerializationError::Io {
                 path: folder_name.as_ref().to_path_buf(),
-                cause
+                cause,
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
