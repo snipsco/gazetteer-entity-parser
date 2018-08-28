@@ -4,7 +4,6 @@ use serde::Deserializer;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
 
-
 /// Struct representing the value of an entity to be added to the parser
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EntityValue {
@@ -35,7 +34,9 @@ impl<'de> Deserialize<'de> for Gazetteer {
         D: Deserializer<'de>,
     {
         let entity_values = <Vec<EntityValue>>::deserialize(deserializer)?;
-        Ok(Gazetteer { data: entity_values })
+        Ok(Gazetteer {
+            data: entity_values,
+        })
     }
 }
 

@@ -4,7 +4,6 @@ use serde_json;
 use std::io;
 use std::path::PathBuf;
 
-
 #[derive(Debug, Fail, Clone)]
 #[fail(
     display = "Symbol {} is already present several times in the symbol table, cannot
@@ -12,13 +11,15 @@ use std::path::PathBuf;
     want to try to force add the symbol.",
     symbol
 )]
-pub struct DuplicateSymbolError { pub symbol: String }
+pub struct DuplicateSymbolError {
+    pub symbol: String,
+}
 
 #[derive(Debug, Fail, Clone)]
 pub enum SymbolTableAddSymbolError {
     #[fail(display = "Key {} missing from symbol table", key)]
     MissingKeyError { key: String },
-    #[fail(display="")]
+    #[fail(display = "")]
     DuplicateSymbolError(DuplicateSymbolError),
 }
 
