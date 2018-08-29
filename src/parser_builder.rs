@@ -16,7 +16,7 @@ pub struct ParserBuilder {
 impl Default for ParserBuilder {
     fn default() -> Self {
         ParserBuilder {
-            gazetteer: Gazetteer::new(),
+            gazetteer: Gazetteer::default(),
             threshold: 1.0,
             n_gazetteer_stop_words: None,
             additional_stop_words: None,
@@ -256,7 +256,7 @@ mod tests {
     "world"
   ]
 }"#;
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "yala".to_string(),
             raw_value: "yolo".to_string(),

@@ -977,7 +977,7 @@ mod tests {
     #[test]
     fn test_seralization_deserialization() {
         let tdir = tempdir().unwrap();
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn test_stop_words_and_edge_cases() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -1157,7 +1157,7 @@ mod tests {
 
     #[test]
     fn test_parser_base() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -1240,7 +1240,7 @@ mod tests {
 
     #[test]
     fn test_parser_multiple_raw_values() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
             raw_value: "blink one eight two".to_string(),
@@ -1291,7 +1291,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_ranking() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Jacques Brel".to_string(),
             raw_value: "jacques brel".to_string(),
@@ -1373,7 +1373,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_restart() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1393,7 +1393,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_unicode_whitespace() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
@@ -1417,7 +1417,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_mixed_ordered_entity() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1442,7 +1442,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_threshold() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
@@ -1524,7 +1524,7 @@ mod tests {
 
     #[test]
     fn test_repeated_words() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1555,7 +1555,7 @@ mod tests {
 
     #[test]
     fn test_injection_ranking() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1626,7 +1626,7 @@ mod tests {
 
     #[test]
     fn test_injection_from_vanilla() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn test_injection_stop_words() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
@@ -1817,7 +1817,7 @@ mod tests {
 
     #[test]
     fn test_match_longest_substring() {
-        let mut gazetteer = Gazetteer::new();
+        let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Black And White".to_string(),
             raw_value: "black and white".to_string(),
