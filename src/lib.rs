@@ -13,7 +13,7 @@
 //!
 //! use gazetteer_entity_parser::{Gazetteer, ParserBuilder, EntityValue, ParsedValue};
 //!
-//! let mut gazetteer = Gazetteer::new();
+//! let mut gazetteer = Gazetteer::default();
 //! // We fill the gazetteer with artists, sorted by popularity
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "The Rolling Stones".to_string(),
@@ -40,7 +40,9 @@
 //! // from a gazetteer and a decoding threshold, i.e. the minimal fraction of matched tokens for
 //! // a parsing to be possible. Additional methods allow to set the stop words of the Parser,
 //! // e.g. here the most common word of the gazetteer, plus "a" and "for".
-//! let parser = ParserBuilder::new(gazetteer, 0.5)
+//! let parser = ParserBuilder::default()
+//!     .minimum_tokens_ratio(0.5)
+//!     .gazetteer(gazetteer)
 //!     .n_stop_words(1)
 //!     .additional_stop_words(vec!["a".to_string(), "for".to_string()]).build().unwrap();
 //!

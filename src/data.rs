@@ -12,7 +12,7 @@ pub struct EntityValue {
 /// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the parser.
 /// The values should be added in order of popularity or probability, with the most popular value
 /// added first (see Parser).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Gazetteer {
     pub data: Vec<EntityValue>,
 }
@@ -39,13 +39,13 @@ impl<'de> Deserialize<'de> for Gazetteer {
 }
 
 impl Gazetteer {
-    /// Instantiate a new empty gazetteer
-    pub fn new() -> Gazetteer {
-        Gazetteer { data: Vec::new() }
-    }
-
     /// Add a single value to the Gazetteer
     pub fn add(&mut self, value: EntityValue) {
         self.data.push(value);
+    }
+
+    /// Extend the Gazetteer with the values of another Gazetteer
+    pub fn extend(&mut self, gazetteer: Self) {
+        self.data.extend(gazetteer.data.into_iter())
     }
 }
