@@ -40,12 +40,17 @@ impl<'de> Deserialize<'de> for Gazetteer {
 
 impl Gazetteer {
     /// Instantiate a new empty gazetteer
-    pub fn new() -> Gazetteer {
-        Gazetteer { data: Vec::new() }
+    pub fn new() -> Self {
+        Self { data: Vec::new() }
     }
 
     /// Add a single value to the Gazetteer
     pub fn add(&mut self, value: EntityValue) {
         self.data.push(value);
+    }
+
+    /// Extend the Gazetteer with the values of another Gazetteer
+    pub fn extend(&mut self, gazetteer: Self) {
+        self.data.extend(gazetteer.data.into_iter())
     }
 }

@@ -990,7 +990,9 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let parser = ParserBuilder::new(gazetteer, 0.5)
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
             .build()
@@ -1041,7 +1043,9 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.5)
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
             .build()
@@ -1171,7 +1175,11 @@ mod tests {
             raw_value: "je suis animal".to_string(),
         });
 
-        let parser = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.0)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -1242,7 +1250,11 @@ mod tests {
             raw_value: "blink 182".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.0)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let mut parsed = parser.run("let's listen to blink 182").unwrap();
         assert_eq!(
@@ -1300,7 +1312,11 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         // When there is a tie in terms of number of token matched, match the most popular choice
         let parsed = parser.run("je veux écouter the stones").unwrap();
@@ -1363,7 +1379,11 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser
             .run("the music I want to listen to is rolling on stones")
@@ -1378,7 +1398,11 @@ mod tests {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
         });
-        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser.run("non quand est survivre").unwrap();
         assert_eq!(
@@ -1399,7 +1423,11 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser.run("rolling the stones").unwrap();
         assert_eq!(
@@ -1436,7 +1464,11 @@ mod tests {
             raw_value: "les enfoirés".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser.run("je veux écouter les rolling stones").unwrap();
         assert_eq!(
@@ -1498,7 +1530,11 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser.run("the the the").unwrap();
         assert_eq!(parsed, vec![]);
@@ -1525,7 +1561,11 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.6).build().unwrap();
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let new_values = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1592,7 +1632,11 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer, 0.6).build().unwrap();
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let new_values_1 = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
@@ -1671,13 +1715,19 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new(gazetteer.clone(), 0.0)
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.0)
+            .gazetteer(gazetteer.clone())
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
             .build()
             .unwrap();
 
-        let parser_no_stop_words = ParserBuilder::new(gazetteer, 0.0).build().unwrap();
+        let parser_no_stop_words = ParserBuilder::new()
+            .minimum_tokens_ratio(0.0)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let mut gt_stop_words: HashSet<u32> = HashSet::default();
         gt_stop_words.insert(
@@ -1793,7 +1843,11 @@ mod tests {
             raw_value: "six seven".to_string(),
         });
 
-        let parser = ParserBuilder::new(gazetteer, 0.5).build().unwrap();
+        let parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
 
         let parsed = parser
             .run("je veux écouter le black and white album")
@@ -1862,7 +1916,9 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new(gaz, 0.6)
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(gaz)
             .n_stop_words(n_stop_words)
             .build()
             .unwrap();
@@ -1893,7 +1949,9 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new(gaz, 0.6)
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(gaz)
             .n_stop_words(n_stop_words)
             .build()
             .unwrap();
@@ -1950,12 +2008,16 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
-        let mut parser_for_test = ParserBuilder::new(album_gaz.clone(), 0.6)
+        let mut parser_for_test = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(album_gaz.clone())
             .n_stop_words(50)
             .build()
             .unwrap();
 
-        let mut parser = ParserBuilder::new(album_gaz, 0.6)
+        let mut parser = ParserBuilder::new()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(album_gaz)
             .n_stop_words(50)
             .build()
             .unwrap();
