@@ -70,6 +70,9 @@ impl ParserBuilder {
 
     /// Instantiate a Parser from the ParserBuilder
     pub fn build(self) -> Result<Parser, BuildError> {
+        if self.threshold < 0.0 || self.threshold > 1.0 {
+            return Err(BuildError { cause: BuildRootError::InvalidThresholdValue(self.threshold)})
+        }
         let mut parser = Parser::default();
         for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
             parser
