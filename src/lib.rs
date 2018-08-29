@@ -40,7 +40,7 @@
 //! // from a gazetteer and a decoding threshold, i.e. the minimal fraction of matched tokens for
 //! // a parsing to be possible. Additional methods allow to set the stop words of the Parser,
 //! // e.g. here the most common word of the gazetteer, plus "a" and "for".
-//! let parser = ParserBuilder::new()
+//! let parser = ParserBuilder::default()
 //!     .minimum_tokens_ratio(0.5)
 //!     .gazetteer(gazetteer)
 //!     .n_stop_words(1)

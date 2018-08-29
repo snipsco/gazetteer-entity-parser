@@ -990,7 +990,7 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .n_stop_words(2)
@@ -1043,7 +1043,7 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .n_stop_words(2)
@@ -1175,7 +1175,7 @@ mod tests {
             raw_value: "je suis animal".to_string(),
         });
 
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
             .gazetteer(gazetteer)
             .build()
@@ -1250,7 +1250,7 @@ mod tests {
             raw_value: "blink 182".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
             .gazetteer(gazetteer)
             .build()
@@ -1312,7 +1312,7 @@ mod tests {
             resolved_value: "Jacques".to_string(),
             raw_value: "jacques".to_string(),
         });
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1379,7 +1379,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1398,7 +1398,7 @@ mod tests {
             resolved_value: "Quand est-ce ?".to_string(),
             raw_value: "quand est -ce".to_string(),
         });
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1423,7 +1423,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1464,7 +1464,7 @@ mod tests {
             raw_value: "les enfoirés".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1530,7 +1530,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1561,7 +1561,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
             .build()
@@ -1632,7 +1632,7 @@ mod tests {
             raw_value: "the rolling stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
             .build()
@@ -1715,7 +1715,7 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
             .gazetteer(gazetteer.clone())
             .n_stop_words(2)
@@ -1723,7 +1723,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parser_no_stop_words = ParserBuilder::new()
+        let parser_no_stop_words = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
             .gazetteer(gazetteer)
             .build()
@@ -1843,7 +1843,7 @@ mod tests {
             raw_value: "six seven".to_string(),
         });
 
-        let parser = ParserBuilder::new()
+        let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
@@ -1916,7 +1916,7 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gaz)
             .n_stop_words(n_stop_words)
@@ -1949,7 +1949,7 @@ mod tests {
         let gaz = Gazetteer { data };
 
         let n_stop_words = 50;
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gaz)
             .n_stop_words(n_stop_words)
@@ -2008,14 +2008,14 @@ mod tests {
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
-        let mut parser_for_test = ParserBuilder::new()
+        let mut parser_for_test = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(album_gaz.clone())
             .n_stop_words(50)
             .build()
             .unwrap();
 
-        let mut parser = ParserBuilder::new()
+        let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(album_gaz)
             .n_stop_words(50)

@@ -13,9 +13,8 @@ pub struct ParserBuilder {
     additional_stop_words: Option<Vec<String>>,
 }
 
-impl ParserBuilder {
-    /// Instantiate a new ParserBuilder with default values
-    pub fn new() -> ParserBuilder {
+impl Default for ParserBuilder {
+    fn default() -> Self {
         ParserBuilder {
             gazetteer: Gazetteer::new(),
             threshold: 1.0,
@@ -23,7 +22,9 @@ impl ParserBuilder {
             additional_stop_words: None,
         }
     }
+}
 
+impl ParserBuilder {
     /// Define the gazetteer that the parser will use. This will replace any previously specified
     /// gazetteer.
     pub fn gazetteer(mut self, gazetteer: Gazetteer) -> Self {
@@ -119,7 +120,7 @@ mod tests {
             }
         ];
         let gazetteer = Gazetteer { data: entity_values };
-        let builder = ParserBuilder::new()
+        let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer.clone())
             .n_stop_words(2)
@@ -165,7 +166,7 @@ mod tests {
         ];
         let gazetteer_1 = Gazetteer { data: entity_values_1.clone() };
         let gazetteer_2 = Gazetteer { data: entity_values_2.clone() };
-        let builder = ParserBuilder::new()
+        let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer_1)
             .extend_with_gazetteer(gazetteer_2)
@@ -210,7 +211,7 @@ mod tests {
                 raw_value: "the stones".to_string(),
             }
         ];
-        let builder = ParserBuilder::new()
+        let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .add_value(entity_values[0].clone())
             .add_value(entity_values[1].clone())
@@ -257,7 +258,7 @@ mod tests {
             resolved_value: "yala".to_string(),
             raw_value: "yolo".to_string(),
         });
-        let builder = ParserBuilder::new()
+        let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
             .n_stop_words(30)
