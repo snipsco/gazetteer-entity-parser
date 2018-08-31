@@ -38,7 +38,8 @@ node('jenkins-slave-generic') {
 
                        section(target, "build-${target.id}") {
                             if (targetName != 'ios') {
-                                ssh_sh 'cargo build'
+                                ssh_sh "cargo build"
+                                ssh_sh "cargo check --benches"
                             } else {
                                 ssh_sh "cargo dinghy --platform ${target.triple} build"
                             }
