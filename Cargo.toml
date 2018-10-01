@@ -26,4 +26,7 @@ name = "bench_parser"
 harness = false
 
 [[example]]
-name = "demo_app"
+name = "interactive_parsing_cli"
+
+[[example]]
+name = "entity_parsing_from_scratch"
