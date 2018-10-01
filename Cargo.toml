@@ -1,6 +1,6 @@
 [package]
 name = "gazetteer-entity-parser"
-version = "0.4.2"
+version = "0.5.0"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
 
 [profile.bench]
@@ -26,4 +26,7 @@ name = "bench_parser"
 harness = false
 
 [[example]]
-name = "demo_app"
+name = "interactive_parsing_cli"
+
+[[example]]
+name = "entity_parsing_from_scratch"

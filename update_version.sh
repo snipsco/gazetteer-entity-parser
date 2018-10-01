@@ -22,7 +22,3 @@ echo "REAL VERSION $NEW_VERSION"
 echo "NEXT VERSION $NEXT_NEW_VERSION"
 
 perl -p -i -e "s/^version = \".*\"\$/version = \"$NEW_VERSION\"/g" Cargo.toml
-
-cargo update \
-    -p gazetteer-entity-parser 
-

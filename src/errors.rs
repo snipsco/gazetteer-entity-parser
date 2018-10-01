@@ -188,6 +188,8 @@ pub enum BuildRootError {
     AddValueError(#[cause] AddValueError),
     #[fail(display = "Caused by: ")]
     SetStopWordsError(#[cause] SetStopWordsError),
+    #[fail(display = "Minimum tokens ratio must between 0.0 and 1.0, but got: {}", _0)]
+    InvalidThresholdValue(f32)
 }
 
 #[derive(Debug, Fail)]

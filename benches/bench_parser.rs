@@ -62,11 +62,12 @@ impl RandomStringGenerator {
 fn artist_gazetteer(c: &mut Criterion) {
     // Real-world artist gazetteer
     let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer { data };
+    let gaz: Gazetteer = serde_json::from_reader(&*body).unwrap();
 
     let n_stop_words = 30;
-    let parser = ParserBuilder::new(gaz.clone(), 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -88,7 +89,9 @@ fn artist_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("I'd like to listen to some rolling stones")),
     );
 
-    let parser = ParserBuilder::new(gaz, 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz)
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -112,11 +115,12 @@ fn artist_gazetteer(c: &mut Criterion) {
 fn album_gazetteer(c: &mut Criterion) {
     // Real-world albums gazetteer
     let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-    let gaz = Gazetteer { data };
+    let gaz: Gazetteer = serde_json::from_reader(&*body).unwrap();
     let n_stop_words = 50;
 
-    let parser = ParserBuilder::new(gaz.clone(), 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -137,7 +141,9 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("Je veux écouter le black and white album")),
     );
 
-    let parser = ParserBuilder::new(gaz.clone(), 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -159,7 +165,9 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(gaz.clone(), 0.5)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.5)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -188,7 +196,9 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(gaz.clone(), 0.7)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.7)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -210,7 +220,9 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(gaz.clone(), 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz.clone())
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -232,7 +244,9 @@ fn album_gazetteer(c: &mut Criterion) {
         move |b| b.iter(|| parser.run("the veux écouter dark side of the moon")),
     );
 
-    let parser = ParserBuilder::new(gaz, 0.5)
+    let parser = ParserBuilder::default()
+        .gazetteer(gaz)
+        .minimum_tokens_ratio(0.5)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -258,7 +272,7 @@ fn album_gazetteer(c: &mut Criterion) {
 fn random_strings(c: &mut Criterion) {
     // Random gazetteer with low redundancy
     let mut rsg = RandomStringGenerator::new(10000);
-    let mut gazetteer = Gazetteer::new();
+    let mut gazetteer = Gazetteer::default();
     for _ in 1..150000 {
         let val = rsg.generate(10);
         gazetteer.add(EntityValue {
@@ -268,7 +282,9 @@ fn random_strings(c: &mut Criterion) {
     }
 
     let n_stop_words = 50;
-    let parser = ParserBuilder::new(gazetteer, 0.5)
+    let parser = ParserBuilder::default()
+        .gazetteer(gazetteer)
+        .minimum_tokens_ratio(0.5)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
@@ -279,7 +295,7 @@ fn random_strings(c: &mut Criterion) {
 
     // Random gazetteer with high redundancy
     let mut rsg = RandomStringGenerator::new(100);
-    let mut gazetteer = Gazetteer::new();
+    let mut gazetteer = Gazetteer::default();
     for _ in 1..100000 {
         let val = rsg.generate(5);
         gazetteer.add(EntityValue {
@@ -288,7 +304,9 @@ fn random_strings(c: &mut Criterion) {
         });
     }
 
-    let parser = ParserBuilder::new(gazetteer, 0.6)
+    let parser = ParserBuilder::default()
+        .gazetteer(gazetteer)
+        .minimum_tokens_ratio(0.6)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
