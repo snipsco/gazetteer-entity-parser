@@ -12,7 +12,6 @@ Example
 
 .. code-block:: rust
 
-    extern crate serde_json;
     extern crate gazetteer_entity_parser;
 
     use gazetteer_entity_parser::*;
