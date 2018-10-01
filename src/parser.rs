@@ -1910,6 +1910,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn real_world_gazetteer_parser() {
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
@@ -2002,6 +2003,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_real_word_injection() {
         // Real-world artist gazetteer
         let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
