@@ -97,7 +97,7 @@ impl PartialOrd for PossibleMatch {
 /// Struct holding an individual parsing result. The result of a run of the parser on a query
 /// will be a vector of ParsedValue. The `range` attribute is the range of the characters
 /// composing the raw value in the input query.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedValue {
     pub resolved_value: String,
     pub range: Range<usize>, // character-level
