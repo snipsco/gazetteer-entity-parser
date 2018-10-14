@@ -66,6 +66,7 @@ pub struct PossibleMatch {
     raw_value_length: u32,
     n_consumed_tokens: u32,
     last_token_in_input: usize,
+    first_token_in_resolution: usize,
     last_token_in_resolution: usize,
     rank: u32,
 }
@@ -643,6 +644,7 @@ impl Parser {
             tokens_range: token_idx..(token_idx + 1),
             raw_value_length: otokens.len() as u32,
             last_token_in_input: token_idx,
+            first_token_in_resolution: last_token_in_resolution,
             last_token_in_resolution,
             n_consumed_tokens: 1,
             rank: *rank,
@@ -675,23 +677,24 @@ impl Parser {
             range: range_start..range_end,
             tokens_range: token_idx..(token_idx + 1),
             last_token_in_input: token_idx,
+            first_token_in_resolution: last_token_in_resolution,
             last_token_in_resolution,
             n_consumed_tokens: 1,
             raw_value_length: otokens.len() as u32,
             rank: *rank,
         };
         let mut n_skips = last_token_in_resolution as u32;
-
-        // Bactrack to check if we left out from skipped words at the beginning
+        // Backtrack to check if we left out from skipped words at the beginning
         'outer: for btok_idx in (0..token_idx).rev() {
             if skipped_tokens.contains_key(&btok_idx) {
                 let (skip_range, skip_tok) = skipped_tokens.get(&btok_idx).unwrap();
                 match otokens.iter().position(|e| *e == *skip_tok) {
                     Some(idx) => {
-                        if idx < possible_match.last_token_in_resolution {
+                        if idx < possible_match.first_token_in_resolution {
                             possible_match.range.start = skip_range.start;
                             possible_match.tokens_range.start = btok_idx;
                             possible_match.n_consumed_tokens += 1;
+                            possible_match.first_token_in_resolution -= 1;
                             n_skips -= 1;
                         } else {
                             break 'outer;
@@ -710,7 +713,7 @@ impl Parser {
         if possible_match.raw_value_length < n_skips {
             return Err(FindPossibleMatchRootError::PossibleMatchRootError(
                 PossibleMatchRootError::PossibleMatchSkippedError {
-                    possible_match: possible_match,
+                    possible_match
                 },
             ));
         }
@@ -773,6 +776,7 @@ impl Parser {
                     n_consumed_tokens: 1,
                     last_token_in_input: 0, // we are not going to need this one
                     last_token_in_resolution: 0, // we are not going to need this one
+                    first_token_in_resolution: 0, // we are not going to need this one
                     rank: possible_match.rank,
                 })
             }
@@ -1151,6 +1155,19 @@ mod tests {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
                 range: 26..44,
+            }]
+        );
+
+        // Multiple stop words at the beginning of a value
+        let parsed = parser
+            .run("hello I want to listen to the the rolling stones")
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "the rolling stones".to_string(),
+                resolved_value: "The Rolling Stones".to_string(),
+                range: 30..48,
             }]
         );
     }
