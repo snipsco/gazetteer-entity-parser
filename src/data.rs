@@ -3,7 +3,7 @@ use std::result::Result;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Struct representing the value of an entity to be added to the parser
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct EntityValue {
     pub resolved_value: String,
     pub raw_value: String,
@@ -12,7 +12,7 @@ pub struct EntityValue {
 /// Struct holding a gazetteer, i.e. an ordered list of `EntityValue` to be added to the parser.
 /// The values should be added in order of popularity or probability, with the most popular value
 /// added first (see Parser).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Gazetteer {
     pub data: Vec<EntityValue>,
 }
