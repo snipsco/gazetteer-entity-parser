@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::BinaryHeap;
 use std::fs;
+use std::iter::FromIterator;
 use std::ops::Range;
 use std::path::Path;
 use std::result::Result;
@@ -26,10 +27,8 @@ pub struct Parser {
     tokens_symbol_table: GazetteerParserSymbolTable,
     // Symbol table for the resolved values
     // The latter differs from the first one in that it can contain the same resolved value
-    // multiple times (to allow for multiple raw values corresponidng to the same resolved value)
+    // multiple times (to allow for multiple raw values corresponding to the same resolved value)
     resolved_symbol_table: GazetteerParserSymbolTable,
-    // maps each token to its count in the dataset
-    token_to_count: HashMap<u32, u32>,
     // maps token to set of resolved values containing token
     token_to_resolved_values: HashMap<u32, HashSet<u32>>,
     // maps resolved value to a tuple (rank, tokens)
@@ -101,7 +100,8 @@ impl PartialOrd for PossibleMatch {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedValue {
     pub resolved_value: String,
-    pub range: Range<usize>, // character-level
+    // character-level
+    pub range: Range<usize>,
     pub raw_value: String,
 }
 
@@ -139,10 +139,7 @@ impl Parser {
         // We force add the new resolved value: even if it already is present in the symbol table
         // we duplicate it to allow several raw values to map to it
 
-        let EntityValue {
-            raw_value,
-            resolved_value,
-        } = entity_value;
+        let EntityValue { raw_value, resolved_value } = entity_value;
         let res_value_idx = self
             .resolved_symbol_table
             .add_symbol(resolved_value, true)
@@ -164,23 +161,16 @@ impl Parser {
                     value: raw_value.clone(),
                     cause,
                 })?;
+
             // Update token_to_resolved_values map
             self.token_to_resolved_values
                 .entry(token_idx)
-                .and_modify(|e| {
-                    e.insert(res_value_idx);
-                })
-                .or_insert({
+                .and_modify(|e| { e.insert(res_value_idx); })
+                .or_insert_with(|| {
                     let mut h = HashSet::default();
                     h.insert(res_value_idx);
                     h
                 });
-
-            // Update token count
-            self.token_to_count
-                .entry(token_idx)
-                .and_modify(|c| *c += 1)
-                .or_insert(1);
 
             // Update resolved_value_to_tokens map
             self.resolved_value_to_tokens
@@ -204,39 +194,16 @@ impl Parser {
         additional_stop_words: Option<Vec<String>>,
     ) -> Result<(), SetStopWordsError> {
         // Update the set of stop words with the most frequent words in the gazetteer
-        // Reset stop words
-        self.stop_words = HashSet::default();
-        if n_stop_words > 0 {
-            self.n_stop_words = n_stop_words;
-            let mut smallest_count: u32 = <u32>::max_value();
-            let mut tok_with_smallest_count: u32 = 0;
-            let mut largest_counts: HashMap<u32, u32> = HashMap::default();
-            for (token, count) in &self.token_to_count {
-                if self.stop_words.len() < n_stop_words {
-                    self.stop_words.insert(*token);
-                    largest_counts.insert(*token, *count);
-                    if count < &smallest_count {
-                        smallest_count = *count;
-                        tok_with_smallest_count = *token;
-                    }
-                } else {
-                    if count > &smallest_count {
-                        self.stop_words.remove(&tok_with_smallest_count);
-                        largest_counts.remove(&tok_with_smallest_count);
-                        self.stop_words.insert(*token);
-                        largest_counts.insert(*token, *count);
-                        smallest_count = *count;
-                        tok_with_smallest_count = *token;
-                        for (prev_tok, prev_count) in &largest_counts {
-                            if prev_count < &smallest_count {
-                                smallest_count = *prev_count;
-                                tok_with_smallest_count = *prev_tok;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let mut tokens_with_counts = self.token_to_resolved_values
+            .iter()
+            .map(|(idx, res_values)| (idx.clone(), res_values.len()))
+            .collect::<Vec<_>>();
+
+        tokens_with_counts.sort_by_key(|&(_, count)| -(count as i32));
+        self.n_stop_words = n_stop_words;
+        self.stop_words = HashSet::from_iter(tokens_with_counts.into_iter()
+            .take(n_stop_words)
+            .map(|(idx, _)| idx));
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table and to tokens_to_resolved_value)
@@ -311,8 +278,7 @@ impl Parser {
             // Remove the resolved value from the resolved_value_to_tokens map
             // remove the corresponding resolved value from the token_to_resolved_value map
             // if after removing, a token is left absent from all resolved entities, then remove
-            // it from the tokens_count, tokens_to_resolved_value maps and from the
-            // tokens_symbol_table
+            // it from the tokens_to_resolved_value maps and from the tokens_symbol_table
             let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
             for val in &self.injected_values {
                 if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val) {
@@ -335,9 +301,9 @@ impl Parser {
                                     cause: InjectionRootError::ResolvedValuesFromTokenError(cause),
                                 })?
                                 .is_empty()
-                            {
-                                tokens_marked_for_removal.insert(tok);
-                            }
+                                {
+                                    tokens_marked_for_removal.insert(tok);
+                                }
                         }
                     }
                 }
@@ -352,7 +318,6 @@ impl Parser {
                 if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok) {
                     for idx in tok_indices {
                         self.token_to_resolved_values.remove(&idx);
-                        self.token_to_count.remove(&idx);
                     }
                 }
             }
@@ -369,9 +334,10 @@ impl Parser {
         }
 
         let new_start_rank = match prepend {
-            true => 0, // we inject new values from rank 0 to n_new_values - 1
-            false => self.resolved_value_to_tokens.len(), // we inject new values from the current
-                        // last rank onwards
+            // we inject new values from rank 0 to n_new_values - 1
+            true => 0,
+            // we inject new values from the current last rank onwards
+            false => self.resolved_value_to_tokens.len(),
         } as u32;
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
@@ -464,18 +430,18 @@ impl Parser {
                                 }
                                 Entry::Vacant(entry) => {
                                     if let Some(new_possible_match) =
-                                        self.insert_new_possible_match(
-                                            res_val,
-                                            value,
-                                            range_start,
-                                            range_end,
-                                            token_idx,
-                                            threshold,
-                                            &skipped_tokens,
-                                        ).map_err(|cause| FindPossibleMatchError { cause })?
-                                    {
-                                        entry.insert(new_possible_match);
-                                    }
+                                    self.insert_new_possible_match(
+                                        res_val,
+                                        value,
+                                        range_start,
+                                        range_end,
+                                        token_idx,
+                                        threshold,
+                                        &skipped_tokens,
+                                    ).map_err(|cause| FindPossibleMatchError { cause })?
+                                        {
+                                            entry.insert(new_possible_match);
+                                        }
                                 }
                             }
                         }
@@ -508,18 +474,18 @@ impl Parser {
                                     }
                                     Entry::Vacant(entry) => {
                                         if let Some(new_possible_match) =
-                                            self.insert_new_possible_match(
-                                                res_val,
-                                                value,
-                                                range_start,
-                                                range_end,
-                                                token_idx,
-                                                1.0,
-                                                &skipped_tokens,
-                                            ).map_err(|cause| FindPossibleMatchError { cause })?
-                                        {
-                                            entry.insert(new_possible_match);
-                                        }
+                                        self.insert_new_possible_match(
+                                            res_val,
+                                            value,
+                                            range_start,
+                                            range_end,
+                                            token_idx,
+                                            1.0,
+                                            &skipped_tokens,
+                                        ).map_err(|cause| FindPossibleMatchError { cause })?
+                                            {
+                                                entry.insert(new_possible_match);
+                                            }
                                     }
                                 }
                             }
@@ -532,10 +498,10 @@ impl Parser {
                                 let val_threshold = match self
                                     .edge_cases
                                     .contains(&possible_match.resolved_value)
-                                {
-                                    false => threshold,
-                                    true => 1.0,
-                                };
+                                    {
+                                        false => threshold,
+                                        true => 1.0,
+                                    };
                                 self.update_previous_match(
                                     &mut possible_match,
                                     res_val,
@@ -596,22 +562,22 @@ impl Parser {
         {
             if possible_match.resolved_value == *res_val
                 && token_idx == possible_match.last_token_in_input + 1
-            {
-                // Grow the last Possible Match
-                // Find the next token in the resolved value that matches the
-                // input token
-                for otoken_idx in possible_match.last_token_in_resolution + 1..otokens.len() {
-                    let otok = otokens[otoken_idx];
-                    if value == otok {
-                        possible_match.range.end = range_end;
-                        possible_match.n_consumed_tokens += 1;
-                        possible_match.last_token_in_input = token_idx;
-                        possible_match.last_token_in_resolution = otoken_idx;
-                        possible_match.tokens_range.end += 1;
-                        return Ok(());
+                {
+                    // Grow the last Possible Match
+                    // Find the next token in the resolved value that matches the
+                    // input token
+                    for otoken_idx in possible_match.last_token_in_resolution + 1..otokens.len() {
+                        let otok = otokens[otoken_idx];
+                        if value == otok {
+                            possible_match.range.end = range_end;
+                            possible_match.n_consumed_tokens += 1;
+                            possible_match.last_token_in_input = token_idx;
+                            possible_match.last_token_in_resolution = otoken_idx;
+                            possible_match.tokens_range.end += 1;
+                            return Ok(());
+                        }
                     }
                 }
-            }
         }
 
         // the token belongs to a new resolved value, or the previous
@@ -760,26 +726,26 @@ impl Parser {
             if possible_match.tokens_range.start < token_idx
                 && possible_match.tokens_range.end > token_idx
                 && !overlapping_tokens.contains(&token_idx)
-            {
-                if let Some(ref mut current_possible_match) = reduced_possible_match {
-                    current_possible_match.range.end = token_range.end;
-                    current_possible_match.tokens_range.end = token_idx + 1;
-                    current_possible_match.n_consumed_tokens += 1;
-                    continue;
-                }
+                {
+                    if let Some(ref mut current_possible_match) = reduced_possible_match {
+                        current_possible_match.range.end = token_range.end;
+                        current_possible_match.tokens_range.end = token_idx + 1;
+                        current_possible_match.n_consumed_tokens += 1;
+                        continue;
+                    }
 
-                reduced_possible_match = Some(PossibleMatch {
-                    resolved_value: possible_match.resolved_value,
-                    range: token_range,
-                    tokens_range: token_idx..token_idx + 1,
-                    raw_value_length: possible_match.resolved_value,
-                    n_consumed_tokens: 1,
-                    last_token_in_input: 0, // we are not going to need this one
-                    last_token_in_resolution: 0, // we are not going to need this one
-                    first_token_in_resolution: 0, // we are not going to need this one
-                    rank: possible_match.rank,
-                })
-            }
+                    reduced_possible_match = Some(PossibleMatch {
+                        resolved_value: possible_match.resolved_value,
+                        range: token_range,
+                        tokens_range: token_idx..token_idx + 1,
+                        raw_value_length: possible_match.resolved_value,
+                        n_consumed_tokens: 1,
+                        last_token_in_input: 0, // we are not going to need this one
+                        last_token_in_resolution: 0, // we are not going to need this one
+                        first_token_in_resolution: 0, // we are not going to need this one
+                        rank: possible_match.rank,
+                    })
+                }
         }
         reduced_possible_match
     }
@@ -816,10 +782,10 @@ impl Parser {
                     let val_threshold = match self
                         .edge_cases
                         .contains(&reduced_possible_match.resolved_value)
-                    {
-                        false => self.threshold,
-                        true => 1.0,
-                    };
+                        {
+                            false => self.threshold,
+                            true => 1.0,
+                        };
                     if check_threshold(
                         reduced_possible_match.n_consumed_tokens,
                         reduced_possible_match.raw_value_length
@@ -977,9 +943,10 @@ mod tests {
     use failure::ResultExt;
     use parser_builder::ParserBuilder;
     use std::time::Instant;
+    use std::fs::File;
 
     #[test]
-    fn test_seralization_deserialization() {
+    fn test_serialization_deserialization() {
         let tdir = tempdir().unwrap();
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
@@ -1705,7 +1672,6 @@ mod tests {
             None
         );
         assert_eq!(parser.tokens_symbol_table.find_symbol("flying"), None);
-        assert!(!parser.token_to_count.contains_key(&flying_idx));
         assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
         assert!(
             !parser
@@ -1746,22 +1712,22 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut gt_stop_words: HashSet<u32> = HashSet::default();
-        gt_stop_words.insert(
+        let mut expected_stop_words: HashSet<u32> = HashSet::default();
+        expected_stop_words.insert(
             parser
                 .tokens_symbol_table
                 .find_single_symbol("the")
                 .unwrap()
                 .unwrap(),
         );
-        gt_stop_words.insert(
+        expected_stop_words.insert(
             parser
                 .tokens_symbol_table
                 .find_single_symbol("stones")
                 .unwrap()
                 .unwrap(),
         );
-        gt_stop_words.insert(
+        expected_stop_words.insert(
             parser
                 .tokens_symbol_table
                 .find_single_symbol("hello")
@@ -1769,8 +1735,8 @@ mod tests {
                 .unwrap(),
         );
 
-        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
-        gt_edge_cases.insert(
+        let mut expected_edge_cases: HashSet<u32> = HashSet::default();
+        expected_edge_cases.insert(
             parser
                 .resolved_symbol_table
                 .find_single_symbol("The Stones")
@@ -1778,8 +1744,8 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(parser.stop_words, gt_stop_words);
-        assert_eq!(parser.edge_cases, gt_edge_cases);
+        assert_eq!(parser.stop_words, expected_stop_words);
+        assert_eq!(parser.edge_cases, expected_edge_cases);
 
         let new_values = vec![
             EntityValue {
@@ -1794,14 +1760,14 @@ mod tests {
 
         parser.inject_new_values(new_values, true, false).unwrap();
 
-        gt_stop_words.remove(
+        expected_stop_words.remove(
             &parser
                 .tokens_symbol_table
                 .find_single_symbol("stones")
                 .unwrap()
                 .unwrap(),
         );
-        gt_stop_words.insert(
+        expected_stop_words.insert(
             parser
                 .tokens_symbol_table
                 .find_single_symbol("rolling")
@@ -1809,14 +1775,14 @@ mod tests {
                 .unwrap(),
         );
 
-        gt_edge_cases.remove(
+        expected_edge_cases.remove(
             &parser
                 .resolved_symbol_table
                 .find_single_symbol("The Stones")
                 .unwrap()
                 .unwrap(),
         );
-        gt_edge_cases.insert(
+        expected_edge_cases.insert(
             parser
                 .resolved_symbol_table
                 .find_single_symbol("Rolling")
@@ -1824,8 +1790,8 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(parser.stop_words, gt_stop_words);
-        assert_eq!(parser.edge_cases, gt_edge_cases);
+        assert_eq!(expected_stop_words, parser.stop_words);
+        assert_eq!(expected_edge_cases, parser.edge_cases);
 
         // No stop words case
         assert!(parser_no_stop_words.stop_words.is_empty());
