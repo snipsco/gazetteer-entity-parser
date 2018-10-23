@@ -70,6 +70,15 @@ pub struct PossibleMatch {
     rank: u32,
 }
 
+impl PossibleMatch {
+    fn check_threshold(&self, threshold: f32) -> bool {
+        check_threshold(
+            self.n_consumed_tokens,
+            self.raw_value_length - self.n_consumed_tokens,
+            threshold)
+    }
+}
+
 impl Ord for PossibleMatch {
     fn cmp(&self, other: &PossibleMatch) -> Ordering {
         if self.n_consumed_tokens < other.n_consumed_tokens {
@@ -386,7 +395,7 @@ impl Parser {
     /// Find all possible matches in a string.
     /// Returns a hashmap, indexed by resolved values. The corresponding value is a vec of tuples
     /// each tuple is a possible match for the resolved value, and is made of
-    // (range of match, number of skips, index of last matched token in the resolved value)
+    /// (range of match, number of skips, index of last matched token in the resolved value)
     fn find_possible_matches(
         &self,
         input: &str,
@@ -396,199 +405,155 @@ impl Parser {
             HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
-        'outer: for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
-            let range_start = range.start;
-            let range_end = range.end;
-            match self
-                .tokens_symbol_table
+        for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
+            if let Some(value) = self.tokens_symbol_table
                 .find_single_symbol(&token)
                 .map_err(|cause| FindPossibleMatchError {
                     cause: FindPossibleMatchRootError::SymbolTableFindSingleSymbolError(cause),
                 })? {
-                Some(value) => {
-                    if !self.stop_words.contains(&value) {
-                        for res_val in self.get_resolved_values_from_token(&value).map_err(
-                            |cause| FindPossibleMatchError {
-                                cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(
-                                    cause,
-                                ),
-                            },
-                        )? {
-                            let entry = possible_matches.entry(*res_val);
-                            match entry {
-                                Entry::Occupied(mut entry) => {
-                                    self.update_previous_match(
-                                        &mut *entry.get_mut(),
-                                        res_val,
-                                        token_idx,
-                                        value,
-                                        range_start,
-                                        range_end,
-                                        threshold,
-                                        &mut matches_heap,
-                                    ).map_err(|cause| FindPossibleMatchError { cause })?
-                                }
-                                Entry::Vacant(entry) => {
-                                    if let Some(new_possible_match) =
-                                    self.insert_new_possible_match(
-                                        res_val,
-                                        value,
-                                        range_start,
-                                        range_end,
-                                        token_idx,
-                                        threshold,
-                                        &skipped_tokens,
-                                    ).map_err(|cause| FindPossibleMatchError { cause })?
-                                        {
-                                            entry.insert(new_possible_match);
-                                        }
-                                }
-                            }
-                        }
-                    } else {
-                        skipped_tokens.insert(token_idx, (range_start..range_end, value));
-                        // Iterate over all edge cases and try to add or update corresponding
-                        // PossibleMatch's. Using a threshold of 1.
-                        let res_vals_from_token = self
-                            .get_resolved_values_from_token(&value)
-                            .map_err(|cause| FindPossibleMatchError {
-                                cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(
-                                    cause,
-                                ),
-                            })?;
-                        for res_val in &self.edge_cases {
-                            if res_vals_from_token.contains(&res_val) {
-                                let entry = possible_matches.entry(*res_val);
-                                match entry {
-                                    Entry::Occupied(mut entry) => {
-                                        self.update_previous_match(
-                                            &mut *entry.get_mut(),
-                                            res_val,
-                                            token_idx,
-                                            value,
-                                            range_start,
-                                            range_end,
-                                            1.0,
-                                            &mut matches_heap,
-                                        ).map_err(|cause| FindPossibleMatchError { cause })?
-                                    }
-                                    Entry::Vacant(entry) => {
-                                        if let Some(new_possible_match) =
-                                        self.insert_new_possible_match(
-                                            res_val,
-                                            value,
-                                            range_start,
-                                            range_end,
-                                            token_idx,
-                                            1.0,
-                                            &skipped_tokens,
-                                        ).map_err(|cause| FindPossibleMatchError { cause })?
-                                            {
-                                                entry.insert(new_possible_match);
-                                            }
-                                    }
-                                }
-                            }
-                        }
-                        // Iterate over current possible matches containing the stop word and
-                        // try to grow them (but do not initiate a new possible match)
-                        // Threshold depends on whether the res_val is a edge case of not
-                        for (res_val, mut possible_match) in &mut possible_matches {
-                            if res_vals_from_token.contains(res_val) {
-                                let val_threshold = match self
-                                    .edge_cases
-                                    .contains(&possible_match.resolved_value)
-                                    {
-                                        false => threshold,
-                                        true => 1.0,
-                                    };
-                                self.update_previous_match(
-                                    &mut possible_match,
-                                    res_val,
-                                    token_idx,
-                                    value,
-                                    range_start,
-                                    range_end,
-                                    val_threshold,
-                                    &mut matches_heap,
-                                ).map_err(|cause| FindPossibleMatchError { cause })?;
-                            }
+                let res_vals_from_token = self.get_resolved_values_from_token(&value)
+                    .map_err(|cause| FindPossibleMatchError {
+                        cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(cause),
+                    })?;
+                if res_vals_from_token.is_empty() {
+                    continue;
+                }
+                if !self.stop_words.contains(&value) {
+                    for res_val in res_vals_from_token {
+                        self.update_or_insert_possible_match(
+                            value,
+                            *res_val,
+                            token_idx,
+                            range.clone(),
+                            &mut possible_matches,
+                            &mut matches_heap,
+                            &mut skipped_tokens,
+                            threshold)?;
+                    }
+                } else {
+                    skipped_tokens.insert(token_idx, (range.clone(), value));
+                    // Iterate over all edge cases and try to add or update corresponding
+                    // PossibleMatch's. Using a threshold of 1.
+                    for res_val in self.edge_cases.iter() {
+                        if res_vals_from_token.contains(res_val) {
+                            self.update_or_insert_possible_match(
+                                value,
+                                *res_val,
+                                token_idx,
+                                range.clone(),
+                                &mut possible_matches,
+                                &mut matches_heap,
+                                &mut skipped_tokens,
+                                1.0)?;
                         }
                     }
+
+                    // Iterate over current possible matches containing the stop word and
+                    // try to grow them (but do not initiate a new possible match)
+                    // Threshold depends on whether the res_val is an edge case or not
+                    for (res_val, mut possible_match) in &mut possible_matches {
+                        if !res_vals_from_token.contains(res_val) || self.edge_cases.contains(res_val) {
+                            continue;
+                        }
+                        self.update_previous_match(
+                            &mut possible_match,
+                            token_idx,
+                            value,
+                            range.clone(),
+                            threshold,
+                            &mut matches_heap,
+                        ).map_err(|cause| FindPossibleMatchError { cause })?;
+                    }
                 }
-                None => continue,
             }
         }
 
         // Add to the heap the possible matches that remain
-        for possible_match in possible_matches.values() {
-            // We start by adding the PossibleMatch to the heap
-            if possible_match.n_consumed_tokens > possible_match.raw_value_length {
-                return Err(PossibleMatchRootError::PossibleMatchConsumedError {
-                    possible_match: possible_match.clone(),
-                }).map_err(|cause| FindPossibleMatchError {
-                    cause: FindPossibleMatchRootError::PossibleMatchRootError(cause),
-                });
+        Ok(possible_matches
+            .values()
+            .filter(|possible_match|
+                if self.edge_cases.contains(&possible_match.resolved_value) {
+                    possible_match.check_threshold(1.0)
+                } else {
+                    possible_match.check_threshold(threshold)
+                })
+            .fold(matches_heap, |mut acc, possible_match| {
+                acc.push(possible_match.clone());
+                acc
+            }))
+    }
+
+    fn update_or_insert_possible_match(
+        &self,
+        value: u32,
+        res_val: u32,
+        token_idx: usize,
+        range: Range<usize>,
+        possible_matches: &mut HashMap<u32, PossibleMatch>,
+        mut matches_heap: &mut BinaryHeap<PossibleMatch>,
+        skipped_tokens: &mut HashMap<usize, (Range<usize>, u32)>,
+        threshold: f32,
+    ) -> Result<(), FindPossibleMatchError> {
+        match possible_matches.entry(res_val) {
+            Entry::Occupied(mut entry) => {
+                self.update_previous_match(
+                    entry.get_mut(),
+                    token_idx,
+                    value,
+                    range,
+                    threshold,
+                    &mut matches_heap,
+                ).map_err(|cause| FindPossibleMatchError { cause })?;
             }
-            // In case the resolved value is an edge case, we set the threshold to 1 for this
-            // value
-            let val_threshold = match self.edge_cases.contains(&possible_match.resolved_value) {
-                false => threshold,
-                true => 1.0,
-            };
-            if check_threshold(
-                possible_match.n_consumed_tokens,
-                possible_match.raw_value_length - possible_match.n_consumed_tokens,
-                val_threshold,
-            ) {
-                matches_heap.push(possible_match.clone());
+            Entry::Vacant(entry) => {
+                self.insert_new_possible_match(
+                    res_val,
+                    value,
+                    range,
+                    token_idx,
+                    threshold,
+                    &skipped_tokens)
+                    .map_err(|cause| FindPossibleMatchError { cause })?
+                    .map(|new_possible_match| {
+                        entry.insert(new_possible_match);
+                    });
             }
         }
-        Ok(matches_heap)
+        Ok(())
     }
 
     fn update_previous_match(
         &self,
         possible_match: &mut PossibleMatch,
-        res_val: &u32,
         token_idx: usize,
         value: u32,
-        range_start: usize,
-        range_end: usize,
+        range: Range<usize>,
         threshold: f32,
         ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
     ) -> Result<(), FindPossibleMatchRootError> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
-        {
-            if possible_match.resolved_value == *res_val
-                && token_idx == possible_match.last_token_in_input + 1
-                {
-                    // Grow the last Possible Match
-                    // Find the next token in the resolved value that matches the
-                    // input token
-                    for otoken_idx in possible_match.last_token_in_resolution + 1..otokens.len() {
-                        let otok = otokens[otoken_idx];
-                        if value == otok {
-                            possible_match.range.end = range_end;
-                            possible_match.n_consumed_tokens += 1;
-                            possible_match.last_token_in_input = token_idx;
-                            possible_match.last_token_in_resolution = otoken_idx;
-                            possible_match.tokens_range.end += 1;
-                            return Ok(());
-                        }
-                    }
+        let (rank, otokens) = self.get_tokens_from_resolved_value(&possible_match.resolved_value).unwrap();
+
+        if token_idx == possible_match.last_token_in_input + 1 {
+            // Grow the last Possible Match
+            // Find the next token in the resolved value that matches the
+            // input token
+            for otoken_idx in (possible_match.last_token_in_resolution + 1)..otokens.len() {
+                let otok = otokens[otoken_idx];
+                if value == otok {
+                    possible_match.range.end = range.end;
+                    possible_match.n_consumed_tokens += 1;
+                    possible_match.last_token_in_input = token_idx;
+                    possible_match.last_token_in_resolution = otoken_idx;
+                    possible_match.tokens_range.end += 1;
+                    return Ok(());
                 }
+            }
         }
+
 
         // the token belongs to a new resolved value, or the previous
-        // PossibleMatch cannot be grown further. We start a new
-        // PossibleMatch
-
-        if possible_match.n_consumed_tokens > possible_match.raw_value_length {
-            return Err(PossibleMatchRootError::PossibleMatchConsumedError {
-                possible_match: possible_match.clone(),
-            }).map_err(|cause| FindPossibleMatchRootError::PossibleMatchRootError(cause));
-        }
+        // PossibleMatch cannot be grown further.
+        // We start a new PossibleMatch.
 
         if check_threshold(
             possible_match.n_consumed_tokens,
@@ -598,15 +563,15 @@ impl Parser {
             matches_heap.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
-            FindPossibleMatchRootError::MissingTokenFromList {
+        let last_token_in_resolution = otokens.iter()
+            .position(|e| *e == value)
+            .ok_or_else(|| FindPossibleMatchRootError::MissingTokenFromList {
                 token_list: otokens.clone(),
                 value,
-            }
-        })?;
+            })?;
         *possible_match = PossibleMatch {
-            resolved_value: *res_val,
-            range: range_start..range_end,
+            resolved_value: possible_match.resolved_value,
+            range,
             tokens_range: token_idx..(token_idx + 1),
             raw_value_length: otokens.len() as u32,
             last_token_in_input: token_idx,
@@ -622,15 +587,14 @@ impl Parser {
     /// start with some stop words
     fn insert_new_possible_match(
         &self,
-        res_val: &u32,
+        res_val: u32,
         value: u32,
-        range_start: usize,
-        range_end: usize,
+        range: Range<usize>,
         token_idx: usize,
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
     ) -> Result<Option<PossibleMatch>, FindPossibleMatchRootError> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val).unwrap();
+        let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val).unwrap();
         let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
             FindPossibleMatchRootError::MissingTokenFromList {
                 token_list: otokens.clone(),
@@ -639,8 +603,8 @@ impl Parser {
         })?;
 
         let mut possible_match = PossibleMatch {
-            resolved_value: *res_val,
-            range: range_start..range_end,
+            resolved_value: res_val,
+            range,
             tokens_range: token_idx..(token_idx + 1),
             last_token_in_input: token_idx,
             first_token_in_resolution: last_token_in_resolution,
@@ -651,9 +615,8 @@ impl Parser {
         };
         let mut n_skips = last_token_in_resolution as u32;
         // Backtrack to check if we left out from skipped words at the beginning
-        'outer: for btok_idx in (0..token_idx).rev() {
-            if skipped_tokens.contains_key(&btok_idx) {
-                let (skip_range, skip_tok) = skipped_tokens.get(&btok_idx).unwrap();
+        for btok_idx in (0..token_idx).rev() {
+            if let Some((skip_range, skip_tok)) = skipped_tokens.get(&btok_idx) {
                 match otokens.iter().position(|e| *e == *skip_tok) {
                     Some(idx) => {
                         if idx < possible_match.first_token_in_resolution {
@@ -663,31 +626,20 @@ impl Parser {
                             possible_match.first_token_in_resolution -= 1;
                             n_skips -= 1;
                         } else {
-                            break 'outer;
+                            break;
                         }
                     }
-                    None => break 'outer,
+                    None => break
                 }
             } else {
-                break 'outer;
+                break;
             }
         }
 
         // Conservative estimate of threshold condition for early stopping
         // if we have already skipped more tokens than is permitted by the threshold condition,
         // there is no point in continuing
-        if possible_match.raw_value_length < n_skips {
-            return Err(FindPossibleMatchRootError::PossibleMatchRootError(
-                PossibleMatchRootError::PossibleMatchSkippedError {
-                    possible_match
-                },
-            ));
-        }
-        if check_threshold(
-            possible_match.raw_value_length - n_skips,
-            n_skips,
-            threshold,
-        ) {
+        if check_threshold(possible_match.raw_value_length - n_skips, n_skips, threshold) {
             Ok(Some(possible_match))
         } else {
             Ok(None)
@@ -702,13 +654,11 @@ impl Parser {
                 input: input.to_string(),
                 cause: RunRootError::FindPossibleMatchError(cause),
             })?;
-        let parsing = self
-            .parse_input(input, matches_heap)
+        self.parse_input(input, matches_heap)
             .map_err(|cause| RunError {
                 input: input.to_string(),
                 cause: RunRootError::ParseInputError(cause),
-            })?;
-        Ok(parsing)
+            })
     }
 
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
@@ -721,33 +671,31 @@ impl Parser {
         possible_match: PossibleMatch,
         overlapping_tokens: HashSet<usize>,
     ) -> Option<PossibleMatch> {
-        let mut reduced_possible_match: Option<PossibleMatch> = None;
-        for (token_idx, (token_range, _)) in whitespace_tokenizer(input).enumerate() {
-            if possible_match.tokens_range.start < token_idx
-                && possible_match.tokens_range.end > token_idx
-                && !overlapping_tokens.contains(&token_idx)
-                {
-                    if let Some(ref mut current_possible_match) = reduced_possible_match {
-                        current_possible_match.range.end = token_range.end;
-                        current_possible_match.tokens_range.end = token_idx + 1;
-                        current_possible_match.n_consumed_tokens += 1;
-                        continue;
-                    }
+        let reduced_tokens = whitespace_tokenizer(input)
+            .enumerate()
+            .filter(|(token_idx, _)|
+                *token_idx >= possible_match.tokens_range.start &&
+                    *token_idx < possible_match.tokens_range.end &&
+                    !overlapping_tokens.contains(token_idx))
+            .collect::<Vec<_>>();
 
-                    reduced_possible_match = Some(PossibleMatch {
-                        resolved_value: possible_match.resolved_value,
-                        range: token_range,
-                        tokens_range: token_idx..token_idx + 1,
-                        raw_value_length: possible_match.resolved_value,
-                        n_consumed_tokens: 1,
-                        last_token_in_input: 0, // we are not going to need this one
-                        last_token_in_resolution: 0, // we are not going to need this one
-                        first_token_in_resolution: 0, // we are not going to need this one
-                        rank: possible_match.rank,
-                    })
+        match (reduced_tokens.first(), reduced_tokens.last()) {
+            (Some((first_token_idx, (first_token_range, _))),
+                Some((last_token_idx, (last_token_range, _)))) => Some(
+                PossibleMatch {
+                    resolved_value: possible_match.resolved_value,
+                    range: (first_token_range.start)..(last_token_range.end),
+                    tokens_range: *first_token_idx..(last_token_idx + 1),
+                    raw_value_length: possible_match.raw_value_length,
+                    n_consumed_tokens: *last_token_idx as u32 - *first_token_idx as u32 + 1,
+                    last_token_in_input: 0, // we are not going to need this one
+                    last_token_in_resolution: 0, // we are not going to need this one
+                    first_token_in_resolution: 0, // we are not going to need this one
+                    rank: possible_match.rank,
                 }
+            ),
+            _ => None
         }
-        reduced_possible_match
     }
 
     fn parse_input(
@@ -759,53 +707,44 @@ impl Parser {
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
 
-        'outer: while !matches_heap.is_empty() && taken_tokens.len() < n_total_tokens {
+        while !matches_heap.is_empty() && taken_tokens.len() < n_total_tokens {
             let possible_match = matches_heap.pop().unwrap();
 
             let tokens_range_start = possible_match.tokens_range.start;
             let tokens_range_end = possible_match.tokens_range.end;
 
-            let overlapping_tokens = {
-                let mut rep: HashSet<usize> = HashSet::default();
-                for t in tokens_range_start..tokens_range_end {
-                    if taken_tokens.contains(&t) {
-                        rep.insert(t);
-                    }
-                }
-                rep
-            };
+            let overlapping_tokens = HashSet::from_iter(taken_tokens
+                .iter()
+                .filter(|idx|
+                    possible_match.tokens_range.start <= **idx &&
+                        possible_match.tokens_range.end > **idx)
+                .map(|idx| *idx));
 
             if !overlapping_tokens.is_empty() {
-                let reduced_possible_matches =
-                    Self::reduce_possible_match(input, possible_match, overlapping_tokens);
-                if let Some(reduced_possible_match) = reduced_possible_matches {
-                    let val_threshold = match self
-                        .edge_cases
-                        .contains(&reduced_possible_match.resolved_value)
-                        {
-                            false => self.threshold,
-                            true => 1.0,
+                let opt_reduced_possible_match = Self::reduce_possible_match(
+                    input,
+                    possible_match,
+                    overlapping_tokens);
+                if let Some(reduced_possible_match) = opt_reduced_possible_match {
+                    let threshold =
+                        if self.edge_cases.contains(&reduced_possible_match.resolved_value) {
+                            1.0
+                        } else {
+                            self.threshold
                         };
-                    if check_threshold(
-                        reduced_possible_match.n_consumed_tokens,
-                        reduced_possible_match.raw_value_length
-                            - reduced_possible_match.n_consumed_tokens,
-                        val_threshold,
-                    ) {
+                    if reduced_possible_match.check_threshold(threshold) {
                         matches_heap.push(reduced_possible_match.clone());
                     }
                 }
-                continue 'outer;
+                continue;
             }
 
-            let range_start = possible_match.range.start;
-            let range_end = possible_match.range.end;
             parsing.push(ParsedValue {
-                range: range_start..range_end,
+                range: possible_match.range.clone(),
                 raw_value: input
                     .chars()
-                    .skip(range_start)
-                    .take(range_end - range_start)
+                    .skip(possible_match.range.start)
+                    .take(possible_match.range.len())
                     .collect(),
                 resolved_value: self
                     .resolved_symbol_table
