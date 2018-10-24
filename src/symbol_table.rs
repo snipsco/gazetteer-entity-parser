@@ -3,17 +3,16 @@
 /// - allows mapping a string to several indices
 
 use errors::*;
-use fnv::FnvHashMap;
 use serde::Deserializer;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
 use std::result::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 
 #[derive(PartialEq, Eq, Debug, Default)]
 pub struct GazetteerParserSymbolTable {
-    pub index_to_string: FnvHashMap<u32, String>,
-    pub string_to_indices: HashMap<String, Vec<u32>>,
+    index_to_string: BTreeMap<u32, String>,
+    string_to_indices: HashMap<String, Vec<u32>>,
     available_index: u32,
 }
 
@@ -21,7 +20,7 @@ pub struct GazetteerParserSymbolTable {
 /// This allows not serializing the two hashmaps but only one of them, to save space
 #[derive(Serialize, Deserialize)]
 struct SerializedGazetteerParserSymbolTable {
-    index_to_string: FnvHashMap<u32, String>,
+    index_to_string: BTreeMap<u32, String>,
     available_index: u32,
 }
 

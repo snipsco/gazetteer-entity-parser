@@ -1,14 +1,13 @@
 use constants::*;
 use data::EntityValue;
 use errors::*;
-use fnv::FnvHashMap as HashMap;
-use fnv::FnvHashSet as HashSet;
+use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
 use rmps::{from_read, Serializer};
 use serde::Serialize;
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, BTreeSet};
 use std::fs;
 use std::iter::FromIterator;
 use std::ops::Range;
@@ -30,7 +29,7 @@ pub struct Parser {
     // multiple times (to allow for multiple raw values corresponding to the same resolved value)
     resolved_symbol_table: GazetteerParserSymbolTable,
     // maps token to set of resolved values containing token
-    token_to_resolved_values: HashMap<u32, HashSet<u32>>,
+    token_to_resolved_values: HashMap<u32, BTreeSet<u32>>,
     // maps resolved value to a tuple (rank, tokens)
     resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>,
     // number of stop words to extract from the entity data
@@ -175,11 +174,7 @@ impl Parser {
             self.token_to_resolved_values
                 .entry(token_idx)
                 .and_modify(|e| { e.insert(res_value_idx); })
-                .or_insert_with(|| {
-                    let mut h = HashSet::default();
-                    h.insert(res_value_idx);
-                    h
-                });
+                .or_insert_with(|| BTreeSet::from_iter(vec![res_value_idx].into_iter()));
 
             // Update resolved_value_to_tokens map
             self.resolved_value_to_tokens
@@ -226,7 +221,7 @@ impl Parser {
                 self.stop_words.insert(tok_idx);
                 self.token_to_resolved_values
                     .entry(tok_idx)
-                    .or_insert(HashSet::default());
+                    .or_insert_with(|| BTreeSet::new());
             }
         }
 
@@ -385,9 +380,8 @@ impl Parser {
     fn get_resolved_values_from_token(
         &self,
         token: &u32,
-    ) -> Result<&HashSet<u32>, ResolvedValuesFromTokenError> {
-        Ok(self
-            .token_to_resolved_values
+    ) -> Result<&BTreeSet<u32>, ResolvedValuesFromTokenError> {
+        Ok(self.token_to_resolved_values
             .get(token)
             .ok_or_else(|| ResolvedValuesFromTokenError::MissingKeyError { key: *token })?)
     }
