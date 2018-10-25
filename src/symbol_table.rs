@@ -9,6 +9,49 @@ use serde::{Deserialize, Serialize};
 use std::result::Result;
 use std::collections::{HashMap, BTreeMap};
 
+#[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct TokenSymbolTable {
+    string_to_indices: BTreeMap<String, u32>,
+    available_index: u32
+}
+
+impl TokenSymbolTable {
+    pub fn add_symbol(&mut self, symbol: String) -> u32 {
+        self.string_to_indices
+            .get(&symbol)
+            .map(|idx| *idx)
+            .unwrap_or_else(|| {
+                let symbol_index = self.available_index;
+                self.available_index += 1;
+                self.string_to_indices.insert(symbol.clone(), symbol_index);
+                symbol_index
+            })
+    }
+
+    /// Find the index of a symbol in the symbol table.
+    pub fn find_symbol(&self, symbol: &str) -> Option<&u32> {
+        self.string_to_indices.get(symbol)
+    }
+
+    /// Find the unique symbol corresponding to an index in the symbol table
+    pub fn find_index(&self, idx: &u32) -> Option<String> {
+        self.string_to_indices
+            .iter()
+            .find(|(_, sym_idx)| *sym_idx == idx)
+            .map(|(symbol, _)| symbol.to_string())
+    }
+
+    /// Remove the unique symbol corresponding to an index in the symbol table
+    pub fn remove_index(&mut self, idx: &u32) -> Option<String> {
+        self.find_index(idx)
+            .and_then(|symbol|
+                self.string_to_indices
+                    .remove(&symbol)
+                    .map(|_| symbol))
+    }
+}
+
+
 #[derive(PartialEq, Eq, Debug, Default)]
 pub struct GazetteerParserSymbolTable {
     index_to_string: BTreeMap<u32, String>,
@@ -26,8 +69,8 @@ struct SerializedGazetteerParserSymbolTable {
 
 impl Serialize for GazetteerParserSymbolTable {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         SerializedGazetteerParserSymbolTable {
             index_to_string: self.index_to_string.clone(),
@@ -38,8 +81,8 @@ impl Serialize for GazetteerParserSymbolTable {
 
 impl<'de> Deserialize<'de> for GazetteerParserSymbolTable {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
+        where
+            D: Deserializer<'de>,
     {
         let serialized_symt = SerializedGazetteerParserSymbolTable::deserialize(deserializer)?;
         // Recompute string_to_indices
@@ -128,6 +171,18 @@ impl GazetteerParserSymbolTable {
         self.string_to_indices.get(symbol)
     }
 
+    /// Find the unique symbol corresponding to an index in the symbol table
+    pub fn find_index(&self, idx: &u32) -> Result<String, SymbolTableFindIndexError> {
+        let symb = self
+            .index_to_string
+            .get(idx)
+            .ok_or_else(|| SymbolTableFindIndexError::MissingKeyError { key: *idx })?;
+        Ok(symb.to_string())
+    }
+}
+
+#[cfg(test)]
+impl GazetteerParserSymbolTable {
     /// Find the unique index of a symbol, and raise an error if it has more than one index
     pub fn find_single_symbol(
         &self,
@@ -147,14 +202,5 @@ impl GazetteerParserSymbolTable {
             }
             _ => Ok(None),
         }
-    }
-
-    /// Find the unique symbol corresponding to an index in the symbol table
-    pub fn find_index(&self, idx: &u32) -> Result<String, SymbolTableFindIndexError> {
-        let symb = self
-            .index_to_string
-            .get(idx)
-            .ok_or_else(|| SymbolTableFindIndexError::MissingKeyError { key: *idx })?;
-        Ok(symb.to_string())
     }
 }

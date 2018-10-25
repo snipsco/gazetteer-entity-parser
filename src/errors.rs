@@ -70,9 +70,9 @@ pub struct SetStopWordsError {
 
 #[derive(Debug, Fail)]
 #[fail(display = "Failed to get stop words")]
-pub struct GetStopWordsError {
-    #[cause]
-    pub cause: SymbolTableFindIndexError,
+pub enum GetStopWordsError {
+    #[fail(display = "Key {} missing from tokens symbol table", key)]
+    MissingKeyError { key: u32 },
 }
 
 #[derive(Debug, Fail)]
@@ -88,8 +88,8 @@ pub enum InjectionRootError {
     TokensFromResolvedValueError(#[cause] TokensFromResolvedValueError),
     #[fail(display = "Caused by: ")]
     ResolvedValuesFromTokenError(#[cause] ResolvedValuesFromTokenError),
-    #[fail(display = "Caused by: ")]
-    SymbolTableFindIndexError(#[cause] SymbolTableFindIndexError),
+    #[fail(display = "Index {} missing from symbol table", key)]
+    SymbolTableFindIndexError { key: u32 },
     #[fail(display = "Caused by: ")]
     AddValueError(#[cause] AddValueError),
     #[fail(display = "Caused by: ")]

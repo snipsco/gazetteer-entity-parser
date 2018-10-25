@@ -75,8 +75,7 @@ impl ParserBuilder {
         }
         let mut parser = Parser::default();
         for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
-            parser
-                .add_value(entity_value, rank as u32)
+            parser.add_value(entity_value, rank as u32)
                 .map_err(|cause| BuildError {
                     cause: BuildRootError::AddValueError(cause),
                 })?;

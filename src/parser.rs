@@ -13,7 +13,7 @@ use std::iter::FromIterator;
 use std::ops::Range;
 use std::path::Path;
 use std::result::Result;
-use symbol_table::GazetteerParserSymbolTable;
+use symbol_table::{GazetteerParserSymbolTable, TokenSymbolTable};
 use utils::{check_threshold, whitespace_tokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
@@ -23,7 +23,7 @@ use utils::{check_threshold, whitespace_tokenizer};
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
 pub struct Parser {
     // Symbol table for the raw tokens
-    tokens_symbol_table: GazetteerParserSymbolTable,
+    tokens_symbol_table: TokenSymbolTable,
     // Symbol table for the resolved values
     // The latter differs from the first one in that it can contain the same resolved value
     // multiple times (to allow for multiple raw values corresponding to the same resolved value)
@@ -161,14 +161,7 @@ impl Parser {
             })?;
 
         for (_, token) in whitespace_tokenizer(&raw_value) {
-            let token_idx = self
-                .tokens_symbol_table
-                .add_symbol(token, false)
-                .map_err(|cause| AddValueError {
-                    kind: AddValueErrorKind::RawValue,
-                    value: raw_value.clone(),
-                    cause,
-                })?;
+            let token_idx = self.tokens_symbol_table.add_symbol(token);
 
             // Update token_to_resolved_values map
             self.token_to_resolved_values
@@ -214,10 +207,7 @@ impl Parser {
         if let Some(additional_stop_words_vec) = additional_stop_words {
             self.additional_stop_words = additional_stop_words_vec.clone();
             for tok_s in additional_stop_words_vec.into_iter() {
-                let tok_idx = self
-                    .tokens_symbol_table
-                    .add_symbol(tok_s, false)
-                    .map_err(|cause| SetStopWordsError { cause })?;
+                let tok_idx = self.tokens_symbol_table.add_symbol(tok_s);
                 self.stop_words.insert(tok_idx);
                 self.token_to_resolved_values
                     .entry(tok_idx)
@@ -249,7 +239,7 @@ impl Parser {
             .map(|idx| {
                 self.tokens_symbol_table
                     .find_index(idx)
-                    .map_err(|cause| GetStopWordsError { cause })
+                    .ok_or_else(|| GetStopWordsError::MissingKeyError { key: *idx })
             })
             .collect()
     }
@@ -278,8 +268,8 @@ impl Parser {
         from_vanilla: bool,
     ) -> Result<(), InjectionError> {
         if from_vanilla {
-            // Remove the resolved values form the resolved_symbol_table
-            // Remove the resolved value from the resolved_value_to_tokens map
+            // Remove the resolved values from the resolved_symbol_table
+            // Remove the resolved values from the resolved_value_to_tokens map
             // remove the corresponding resolved value from the token_to_resolved_value map
             // if after removing, a token is left absent from all resolved entities, then remove
             // it from the tokens_to_resolved_value maps and from the tokens_symbol_table
@@ -313,17 +303,8 @@ impl Parser {
                 }
             }
             for tok_idx in tokens_marked_for_removal {
-                let tok = self
-                    .tokens_symbol_table
-                    .find_index(&tok_idx)
-                    .map_err(|cause| InjectionError {
-                        cause: InjectionRootError::SymbolTableFindIndexError(cause),
-                    })?;
-                if let Some(tok_indices) = self.tokens_symbol_table.remove_symbol(&tok) {
-                    for idx in tok_indices {
-                        self.token_to_resolved_values.remove(&idx);
-                    }
-                }
+                self.tokens_symbol_table.remove_index(&tok_idx);
+                self.token_to_resolved_values.remove(&tok_idx);
             }
         }
 
@@ -368,8 +349,7 @@ impl Parser {
         &self,
         resolved_value: &u32,
     ) -> Result<&(u32, Vec<u32>), TokensFromResolvedValueError> {
-        Ok(self
-            .resolved_value_to_tokens
+        Ok(self.resolved_value_to_tokens
             .get(resolved_value)
             .ok_or_else(|| TokensFromResolvedValueError::MissingKeyError {
                 key: *resolved_value,
@@ -400,11 +380,7 @@ impl Parser {
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
         for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
-            if let Some(value) = self.tokens_symbol_table
-                .find_single_symbol(&token)
-                .map_err(|cause| FindPossibleMatchError {
-                    cause: FindPossibleMatchRootError::SymbolTableFindSingleSymbolError(cause),
-                })? {
+            if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
                 let res_vals_from_token = self.get_resolved_values_from_token(&value)
                     .map_err(|cause| FindPossibleMatchError {
                         cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(cause),
@@ -415,7 +391,7 @@ impl Parser {
                 if !self.stop_words.contains(&value) {
                     for res_val in res_vals_from_token {
                         self.update_or_insert_possible_match(
-                            value,
+                            *value,
                             *res_val,
                             token_idx,
                             range.clone(),
@@ -425,13 +401,13 @@ impl Parser {
                             threshold)?;
                     }
                 } else {
-                    skipped_tokens.insert(token_idx, (range.clone(), value));
+                    skipped_tokens.insert(token_idx, (range.clone(), *value));
                     // Iterate over all edge cases and try to add or update corresponding
                     // PossibleMatch's. Using a threshold of 1.
                     for res_val in self.edge_cases.iter() {
                         if res_vals_from_token.contains(res_val) {
                             self.update_or_insert_possible_match(
-                                value,
+                                *value,
                                 *res_val,
                                 token_idx,
                                 range.clone(),
@@ -452,7 +428,7 @@ impl Parser {
                         self.update_previous_match(
                             &mut possible_match,
                             token_idx,
-                            value,
+                            *value,
                             range.clone(),
                             threshold,
                             &mut matches_heap,
@@ -914,14 +890,18 @@ mod tests {
         let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
 
         assert_eq!(config.threshold, 0.5);
-        let mut gt_stop_words: HashSet<String> = HashSet::default();
-        gt_stop_words.insert("the".to_string());
-        gt_stop_words.insert("stones".to_string());
-        gt_stop_words.insert("hello".to_string());
-        assert_eq!(config.stop_words, gt_stop_words);
-        let mut gt_edge_cases: HashSet<String> = HashSet::default();
-        gt_edge_cases.insert("The Rolling Stones".to_string());
-        assert_eq!(config.edge_cases, gt_edge_cases);
+        let expected_stop_words = HashSet::from_iter(
+            vec![
+                "the".to_string(),
+                "stones".to_string(),
+                "hello".to_string(),
+            ].into_iter()
+        );
+        assert_eq!(config.stop_words, expected_stop_words);
+        let expected_edge_cases = HashSet::from_iter(vec![
+            "The Rolling Stones".to_string()
+        ].into_iter());
+        assert_eq!(config.edge_cases, expected_edge_cases);
 
         tdir.close().unwrap();
     }
@@ -955,38 +935,22 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut gt_stop_words: HashSet<u32> = HashSet::default();
-        gt_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("the")
-                .unwrap()
-                .unwrap(),
+        let expected_stop_words = HashSet::from_iter(
+            vec!["the","stones","hello"]
+                .into_iter()
+                .map(|sym| *parser.tokens_symbol_table
+                    .find_symbol(sym)
+                    .unwrap())
         );
-        gt_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("stones")
-                .unwrap()
-                .unwrap(),
-        );
-        gt_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("hello")
-                .unwrap()
-                .unwrap(),
-        );
-        assert!(parser.stop_words == gt_stop_words);
-        let mut gt_edge_cases: HashSet<u32> = HashSet::default();
-        gt_edge_cases.insert(
-            parser
-                .resolved_symbol_table
+        assert_eq!(expected_stop_words, parser.stop_words);
+        let mut expected_edge_cases: HashSet<u32> = HashSet::default();
+        expected_edge_cases.insert(
+            parser.resolved_symbol_table
                 .find_single_symbol("The Stones")
                 .unwrap()
                 .unwrap(),
         );
-        assert!(parser.edge_cases == gt_edge_cases);
+        assert_eq!(expected_edge_cases, parser.edge_cases);
 
         // Value starting with a stop word
         parser.set_threshold(0.6);
@@ -1568,15 +1532,13 @@ mod tests {
             raw_value: "queens of the stone age".to_string(),
         }];
 
-        let flying_idx = parser
+        let flying_idx = *parser
             .tokens_symbol_table
-            .find_single_symbol("flying")
-            .unwrap()
+            .find_symbol("flying")
             .unwrap();
-        let stones_idx = parser
+        let stones_idx = *parser
             .tokens_symbol_table
-            .find_single_symbol("stones")
-            .unwrap()
+            .find_symbol("stones")
             .unwrap();
         let flying_stones_idx = parser
             .resolved_symbol_table
@@ -1645,33 +1607,17 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut expected_stop_words: HashSet<u32> = HashSet::default();
-        expected_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("the")
-                .unwrap()
-                .unwrap(),
-        );
-        expected_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("stones")
-                .unwrap()
-                .unwrap(),
-        );
-        expected_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("hello")
-                .unwrap()
-                .unwrap(),
+        let mut expected_stop_words = HashSet::from_iter(
+            vec!["the", "stones", "hello"]
+                .into_iter()
+                .map(|sym| *parser.tokens_symbol_table
+                    .find_symbol(sym)
+                    .unwrap())
         );
 
         let mut expected_edge_cases: HashSet<u32> = HashSet::default();
         expected_edge_cases.insert(
-            parser
-                .resolved_symbol_table
+            parser.resolved_symbol_table
                 .find_single_symbol("The Stones")
                 .unwrap()
                 .unwrap(),
@@ -1694,30 +1640,24 @@ mod tests {
         parser.inject_new_values(new_values, true, false).unwrap();
 
         expected_stop_words.remove(
-            &parser
-                .tokens_symbol_table
-                .find_single_symbol("stones")
-                .unwrap()
+            parser.tokens_symbol_table
+                .find_symbol("stones")
                 .unwrap(),
         );
         expected_stop_words.insert(
-            parser
-                .tokens_symbol_table
-                .find_single_symbol("rolling")
-                .unwrap()
+            *parser.tokens_symbol_table
+                .find_symbol("rolling")
                 .unwrap(),
         );
 
         expected_edge_cases.remove(
-            &parser
-                .resolved_symbol_table
+            &parser.resolved_symbol_table
                 .find_single_symbol("The Stones")
                 .unwrap()
                 .unwrap(),
         );
         expected_edge_cases.insert(
-            parser
-                .resolved_symbol_table
+            parser.resolved_symbol_table
                 .find_single_symbol("Rolling")
                 .unwrap()
                 .unwrap(),
