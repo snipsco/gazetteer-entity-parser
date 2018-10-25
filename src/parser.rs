@@ -9,11 +9,10 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, BTreeSet};
 use std::fs;
-use std::iter::FromIterator;
 use std::ops::Range;
 use std::path::Path;
 use std::result::Result;
-use symbol_table::{GazetteerParserSymbolTable, TokenSymbolTable};
+use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
 use utils::{check_threshold, whitespace_tokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
@@ -27,7 +26,7 @@ pub struct Parser {
     // Symbol table for the resolved values
     // The latter differs from the first one in that it can contain the same resolved value
     // multiple times (to allow for multiple raw values corresponding to the same resolved value)
-    resolved_symbol_table: GazetteerParserSymbolTable,
+    resolved_symbol_table: ResolvedSymbolTable,
     // maps token to set of resolved values containing token
     token_to_resolved_values: HashMap<u32, BTreeSet<u32>>,
     // maps resolved value to a tuple (rank, tokens)
@@ -139,35 +138,19 @@ impl PartialOrd for ParsedValue {
 
 impl Parser {
     /// Add a single entity value to the parser
-    pub(crate) fn add_value(
-        &mut self,
-        entity_value: EntityValue,
-        rank: u32,
-    ) -> Result<(), AddValueError> {
-        // We force add the new resolved value: even if it already is present in the symbol table
+    pub(crate) fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
+        // We force add the new resolved value: even if it is already present in the symbol table
         // we duplicate it to allow several raw values to map to it
+        let res_value_idx = self.resolved_symbol_table.add_symbol(entity_value.resolved_value);
 
-        let EntityValue { raw_value, resolved_value } = entity_value;
-        let res_value_idx = self
-            .resolved_symbol_table
-            .add_symbol(resolved_value, true)
-            .map_err(|cause| match cause.clone() {
-                SymbolTableAddSymbolError::MissingKeyError { key: k }
-                | SymbolTableAddSymbolError::DuplicateSymbolError { symbol: k } => AddValueError {
-                    kind: AddValueErrorKind::ResolvedValue,
-                    value: k,
-                    cause,
-                },
-            })?;
-
-        for (_, token) in whitespace_tokenizer(&raw_value) {
+        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
             let token_idx = self.tokens_symbol_table.add_symbol(token);
 
             // Update token_to_resolved_values map
             self.token_to_resolved_values
                 .entry(token_idx)
                 .and_modify(|e| { e.insert(res_value_idx); })
-                .or_insert_with(|| BTreeSet::from_iter(vec![res_value_idx].into_iter()));
+                .or_insert_with(|| vec![res_value_idx].into_iter().collect());
 
             // Update resolved_value_to_tokens map
             self.resolved_value_to_tokens
@@ -175,7 +158,6 @@ impl Parser {
                 .and_modify(|(_, v)| v.push(token_idx))
                 .or_insert((rank, vec![token_idx]));
         }
-        Ok(())
     }
 
     /// Update an internal set of stop words and corresponding edge cases.
@@ -189,7 +171,7 @@ impl Parser {
         &mut self,
         n_stop_words: usize,
         additional_stop_words: Option<Vec<String>>,
-    ) -> Result<(), SetStopWordsError> {
+    ) {
         // Update the set of stop words with the most frequent words in the gazetteer
         let mut tokens_with_counts = self.token_to_resolved_values
             .iter()
@@ -198,9 +180,10 @@ impl Parser {
 
         tokens_with_counts.sort_by_key(|&(_, count)| -(count as i32));
         self.n_stop_words = n_stop_words;
-        self.stop_words = HashSet::from_iter(tokens_with_counts.into_iter()
+        self.stop_words = tokens_with_counts.into_iter()
             .take(n_stop_words)
-            .map(|(idx, _)| idx));
+            .map(|(idx, _)| idx)
+            .collect();
 
         // add the words from the `additional_stop_words` vec (and potentially add them to
         // the symbol table and to tokens_to_resolved_value)
@@ -216,43 +199,27 @@ impl Parser {
         }
 
         // Update the set of edge_cases. i.e. resolved value that only contain stop words
-
-        // Reset edge cases
-        self.edge_cases = HashSet::default();
-
-        'outer: for (res_val, (_, tokens)) in &self.resolved_value_to_tokens {
-            for tok in tokens {
-                if !(self.stop_words.contains(tok)) {
-                    continue 'outer;
-                }
-            }
-            self.edge_cases.insert(*res_val);
-        }
-
-        Ok(())
+        self.edge_cases = self.resolved_value_to_tokens
+            .iter()
+            .filter(|(_, (_, tokens))|
+                tokens.iter().all(|token| self.stop_words.contains(token)))
+            .map(|(res_val, _)| *res_val)
+            .collect();
     }
 
     /// Get the set of stop words
-    pub fn get_stop_words(&self) -> Result<HashSet<String>, GetStopWordsError> {
+    pub fn get_stop_words(&self) -> HashSet<String> {
         self.stop_words
             .iter()
-            .map(|idx| {
-                self.tokens_symbol_table
-                    .find_index(idx)
-                    .ok_or_else(|| GetStopWordsError::MissingKeyError { key: *idx })
-            })
+            .flat_map(|idx| self.tokens_symbol_table.find_index(idx).cloned())
             .collect()
     }
 
     /// Get the set of edge cases, containing only stop words
-    pub fn get_edge_cases(&self) -> Result<HashSet<String>, GetEdgeCasesError> {
+    pub fn get_edge_cases(&self) -> HashSet<String> {
         self.edge_cases
             .iter()
-            .map(|idx| {
-                self.resolved_symbol_table
-                    .find_index(idx)
-                    .map_err(|cause| GetEdgeCasesError { cause })
-            })
+            .flat_map(|idx| self.resolved_symbol_table.find_index(idx).cloned())
             .collect()
     }
 
@@ -275,29 +242,28 @@ impl Parser {
             // it from the tokens_to_resolved_value maps and from the tokens_symbol_table
             let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
             for val in &self.injected_values {
-                if let Some(res_val_indices) = self.resolved_symbol_table.remove_symbol(&val) {
-                    for res_val in res_val_indices {
-                        let (_, tokens) = self
-                            .get_tokens_from_resolved_value(&res_val)
-                            .map_err(|cause| InjectionError {
-                                cause: InjectionRootError::TokensFromResolvedValueError(cause),
-                            })?
-                            .clone();
-                        self.resolved_value_to_tokens.remove(&res_val);
-                        for tok in tokens {
-                            self.token_to_resolved_values.entry(tok).and_modify(|v| {
+                for res_val in self.resolved_symbol_table.remove_symbol(&val) {
+                    let (_, tokens) = self
+                        .get_tokens_from_resolved_value(&res_val)
+                        .map_err(|cause| InjectionError {
+                            cause: InjectionRootError::TokensFromResolvedValueError(cause),
+                        })?
+                        .clone();
+                    self.resolved_value_to_tokens.remove(&res_val);
+                    for tok in tokens {
+                        let remaining_values = self.token_to_resolved_values
+                            .get_mut(&tok)
+                            .map(|v| {
                                 v.remove(&res_val);
-                            });
-                            // Check the remaining resolved values containing the token
-                            if self
-                                .get_resolved_values_from_token(&tok)
-                                .map_err(|cause| InjectionError {
-                                    cause: InjectionRootError::ResolvedValuesFromTokenError(cause),
-                                })?
-                                .is_empty()
-                                {
-                                    tokens_marked_for_removal.insert(tok);
-                                }
+                                v
+                            })
+                            .ok_or_else(|| InjectionError {
+                                cause: InjectionRootError::ResolvedValuesFromTokenError { key: tok },
+                            })?;
+
+                        // Check the remaining resolved values containing the token
+                        if remaining_values.is_empty() {
+                            tokens_marked_for_removal.insert(tok);
                         }
                     }
                 }
@@ -326,21 +292,14 @@ impl Parser {
         } as u32;
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), new_start_rank + rank as u32)
-                .map_err(|cause| InjectionError {
-                    cause: InjectionRootError::AddValueError(cause),
-                })?;
+            self.add_value(entity_value.clone(), new_start_rank + rank as u32);
             self.injected_values.insert(entity_value.resolved_value);
         }
 
         // Update the stop words and edge cases
         let n_stop_words = self.n_stop_words;
         let additional_stop_words = self.additional_stop_words.clone();
-        self.set_stop_words(n_stop_words, Some(additional_stop_words))
-            .map_err(|cause| InjectionError {
-                cause: InjectionRootError::SetStopWordsError(cause),
-            })?;
-
+        self.set_stop_words(n_stop_words, Some(additional_stop_words));
         Ok(())
     }
 
@@ -683,12 +642,13 @@ impl Parser {
             let tokens_range_start = possible_match.tokens_range.start;
             let tokens_range_end = possible_match.tokens_range.end;
 
-            let overlapping_tokens = HashSet::from_iter(taken_tokens
+            let overlapping_tokens: HashSet<_> = taken_tokens
                 .iter()
                 .filter(|idx|
                     possible_match.tokens_range.start <= **idx &&
                         possible_match.tokens_range.end > **idx)
-                .map(|idx| *idx));
+                .map(|idx| *idx)
+                .collect();
 
             if !overlapping_tokens.is_empty() {
                 let opt_reduced_possible_match = Self::reduce_possible_match(
@@ -719,7 +679,10 @@ impl Parser {
                 resolved_value: self
                     .resolved_symbol_table
                     .find_index(&possible_match.resolved_value)
-                    .map_err(|cause| ParseInputError { cause })?,
+                    .cloned()
+                    .ok_or_else(|| ParseInputError::MissingKeyError {
+                        key: possible_match.resolved_value
+                    })?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -735,16 +698,8 @@ impl Parser {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             threshold: self.threshold,
-            stop_words: self
-                .get_stop_words()
-                .map_err(|cause| GetParserConfigError {
-                    cause: GetParserConfigRootError::GetStopWordsError(cause),
-                })?,
-            edge_cases: self
-                .get_edge_cases()
-                .map_err(|cause| GetParserConfigError {
-                    cause: GetParserConfigRootError::GetEdgeCasesError(cause),
-                })?,
+            stop_words: self.get_stop_words(),
+            edge_cases: self.get_edge_cases(),
         })
     }
 
@@ -766,7 +721,7 @@ impl Parser {
         let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))
             .map_err(|cause| SerializationError::Io {
                 path: folder_name.as_ref().join(METADATA_FILENAME).to_path_buf(),
-                cause: cause,
+                cause,
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
@@ -775,7 +730,7 @@ impl Parser {
         serde_json::to_writer(writer, &config)
             .map_err(|cause| SerializationError::InvalidConfigFormat {
                 path: folder_name.as_ref().join(METADATA_FILENAME),
-                cause: cause,
+                cause,
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
@@ -785,7 +740,7 @@ impl Parser {
         let mut writer = fs::File::create(&parser_path)
             .map_err(|cause| SerializationError::Io {
                 path: parser_path.clone(),
-                cause: cause,
+                cause,
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
@@ -794,7 +749,7 @@ impl Parser {
         self.serialize(&mut Serializer::new(&mut writer))
             .map_err(|cause| SerializationError::ParserSerializationError {
                 path: parser_path,
-                cause: cause,
+                cause,
             })
             .map_err(|cause| DumpError {
                 cause: DumpRootError::SerializationError(cause),
@@ -816,7 +771,7 @@ impl Parser {
             serde_json::from_reader(metadata_file).map_err(|cause| LoadError {
                 cause: DeserializationError::ReadConfigError {
                     path: metadata_path,
-                    cause: cause,
+                    cause,
                 },
             })?;
 
@@ -824,14 +779,14 @@ impl Parser {
         let reader = fs::File::open(&parser_path).map_err(|cause| LoadError {
             cause: DeserializationError::Io {
                 path: parser_path.clone(),
-                cause: cause,
+                cause,
             },
         })?;
 
         Ok(from_read(reader).map_err(|cause| LoadError {
             cause: DeserializationError::ParserDeserializationError {
                 path: parser_path,
-                cause: cause,
+                cause,
             },
         })?)
     }
@@ -890,17 +845,18 @@ mod tests {
         let config: ParserConfig = serde_json::from_reader(metadata_file).unwrap();
 
         assert_eq!(config.threshold, 0.5);
-        let expected_stop_words = HashSet::from_iter(
-            vec![
-                "the".to_string(),
-                "stones".to_string(),
-                "hello".to_string(),
-            ].into_iter()
-        );
+        let expected_stop_words = vec![
+            "the".to_string(),
+            "stones".to_string(),
+            "hello".to_string(),
+        ]
+            .into_iter()
+            .collect();
+
         assert_eq!(config.stop_words, expected_stop_words);
-        let expected_edge_cases = HashSet::from_iter(vec![
-            "The Rolling Stones".to_string()
-        ].into_iter());
+        let expected_edge_cases = vec!["The Rolling Stones".to_string()]
+            .into_iter()
+            .collect();
         assert_eq!(config.edge_cases, expected_edge_cases);
 
         tdir.close().unwrap();
@@ -935,20 +891,17 @@ mod tests {
             .build()
             .unwrap();
 
-        let expected_stop_words = HashSet::from_iter(
-            vec!["the","stones","hello"]
-                .into_iter()
-                .map(|sym| *parser.tokens_symbol_table
-                    .find_symbol(sym)
-                    .unwrap())
-        );
+        let expected_stop_words: HashSet<_> = vec!["the", "stones", "hello"]
+            .into_iter()
+            .map(|sym| *parser.tokens_symbol_table
+                .find_symbol(sym)
+                .unwrap())
+            .collect();
         assert_eq!(expected_stop_words, parser.stop_words);
         let mut expected_edge_cases: HashSet<u32> = HashSet::default();
         expected_edge_cases.insert(
             parser.resolved_symbol_table
-                .find_single_symbol("The Stones")
-                .unwrap()
-                .unwrap(),
+                .find_symbol("The Stones")[0]
         );
         assert_eq!(expected_edge_cases, parser.edge_cases);
 
@@ -1540,10 +1493,10 @@ mod tests {
             .tokens_symbol_table
             .find_symbol("stones")
             .unwrap();
-        let flying_stones_idx = parser
+        let flying_stones_idx = *parser
             .resolved_symbol_table
-            .find_single_symbol("The Flying Stones")
-            .unwrap()
+            .find_symbol("The Flying Stones")
+            .first()
             .unwrap();
         parser.inject_new_values(new_values_2, true, true).unwrap();
 
@@ -1560,18 +1513,12 @@ mod tests {
             }]
         );
 
-        assert_eq!(
-            parser
-                .resolved_symbol_table
-                .find_symbol("The Flying Stones"),
-            None
-        );
-        assert_eq!(parser.tokens_symbol_table.find_symbol("flying"), None);
+        assert!(parser.resolved_symbol_table.find_symbol("The Flying Stones").is_empty());
+        assert!(parser.tokens_symbol_table.find_symbol("flying").is_none());
         assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
         assert!(
             !parser
-                .get_resolved_values_from_token(&stones_idx)
-                .unwrap()
+                .token_to_resolved_values.get(&stones_idx).unwrap()
                 .contains(&flying_stones_idx)
         );
         assert!(
@@ -1607,20 +1554,17 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut expected_stop_words = HashSet::from_iter(
-            vec!["the", "stones", "hello"]
-                .into_iter()
-                .map(|sym| *parser.tokens_symbol_table
-                    .find_symbol(sym)
-                    .unwrap())
-        );
+        let mut expected_stop_words = vec!["the", "stones", "hello"]
+            .into_iter()
+            .map(|sym| *parser.tokens_symbol_table
+                .find_symbol(sym)
+                .unwrap())
+            .collect();
 
         let mut expected_edge_cases: HashSet<u32> = HashSet::default();
         expected_edge_cases.insert(
             parser.resolved_symbol_table
-                .find_single_symbol("The Stones")
-                .unwrap()
-                .unwrap(),
+                .find_symbol("The Stones")[0]
         );
 
         assert_eq!(parser.stop_words, expected_stop_words);
@@ -1652,15 +1596,11 @@ mod tests {
 
         expected_edge_cases.remove(
             &parser.resolved_symbol_table
-                .find_single_symbol("The Stones")
-                .unwrap()
-                .unwrap(),
+                .find_symbol("The Stones")[0]
         );
         expected_edge_cases.insert(
             parser.resolved_symbol_table
-                .find_single_symbol("Rolling")
-                .unwrap()
-                .unwrap(),
+                .find_symbol("Rolling")[0]
         );
 
         assert_eq!(expected_stop_words, parser.stop_words);

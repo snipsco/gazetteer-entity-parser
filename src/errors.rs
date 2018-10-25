@@ -86,8 +86,8 @@ pub struct GetEdgeCasesError {
 pub enum InjectionRootError {
     #[fail(display = "Caused by: ")]
     TokensFromResolvedValueError(#[cause] TokensFromResolvedValueError),
-    #[fail(display = "Caused by: ")]
-    ResolvedValuesFromTokenError(#[cause] ResolvedValuesFromTokenError),
+    #[fail(display = "Key {} missing from token_to_resolved_values map", key)]
+    ResolvedValuesFromTokenError { key: u32 },
     #[fail(display = "Index {} missing from symbol table", key)]
     SymbolTableFindIndexError { key: u32 },
     #[fail(display = "Caused by: ")]
@@ -124,9 +124,9 @@ pub struct FindPossibleMatchError {
 
 #[derive(Debug, Fail)]
 #[fail(display = "Error parsing input")]
-pub struct ParseInputError {
-    #[cause]
-    pub cause: SymbolTableFindIndexError,
+pub enum ParseInputError {
+    #[fail(display = "Index {} missing from symbol table", key)]
+    MissingKeyError { key: u32 },
 }
 
 #[derive(Debug, Fail)]
@@ -189,7 +189,7 @@ pub enum BuildRootError {
     #[fail(display = "Caused by: ")]
     SetStopWordsError(#[cause] SetStopWordsError),
     #[fail(display = "Minimum tokens ratio must between 0.0 and 1.0, but got: {}", _0)]
-    InvalidThresholdValue(f32)
+    InvalidThresholdValue(f32),
 }
 
 #[derive(Debug, Fail)]
@@ -207,7 +207,6 @@ pub struct GazetteerLoadingError {
 }
 
 /// Low-level errors
-
 #[derive(Debug, Fail)]
 pub enum PossibleMatchRootError {
     #[fail(
