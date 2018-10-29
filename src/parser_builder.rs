@@ -1,7 +1,6 @@
 use data::Gazetteer;
 use errors::*;
 use parser::Parser;
-use std::result::Result;
 use EntityValue;
 
 /// Struct exposing a builder allowing to configure and build a Parser
@@ -69,9 +68,11 @@ impl ParserBuilder {
     }
 
     /// Instantiate a Parser from the ParserBuilder
-    pub fn build(self) -> Result<Parser, BuildError> {
+    pub fn build(self) -> Result<Parser> {
         if self.threshold < 0.0 || self.threshold > 1.0 {
-            return Err(BuildError { cause: BuildRootError::InvalidThresholdValue(self.threshold)})
+            return Err(
+                format_err!("Invalid value for threshold ({}), it must be between 0.0 and 1.0",
+                self.threshold))
         }
         let mut parser = self.gazetteer.data
             .into_iter()

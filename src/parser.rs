@@ -1,6 +1,7 @@
 use constants::*;
 use data::EntityValue;
 use errors::*;
+use failure::ResultExt;
 use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
 use rmps::{from_read, Serializer};
 use serde::Serialize;
@@ -11,7 +12,6 @@ use std::collections::{BinaryHeap, BTreeSet};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use std::result::Result;
 use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
 use utils::{check_threshold, whitespace_tokenizer};
 
@@ -138,7 +138,7 @@ impl PartialOrd for ParsedValue {
 
 impl Parser {
     /// Add a single entity value to the parser
-    pub(crate) fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
+    pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
         // We force add the new resolved value: even if it is already present in the symbol table
         // we duplicate it to allow several raw values to map to it
         let res_value_idx = self.resolved_symbol_table.add_symbol(entity_value.resolved_value);
@@ -233,7 +233,7 @@ impl Parser {
         new_values: Vec<EntityValue>,
         prepend: bool,
         from_vanilla: bool,
-    ) -> Result<(), InjectionError> {
+    ) -> Result<()> {
         if from_vanilla {
             // Remove the resolved values from the resolved_symbol_table
             // Remove the resolved values from the resolved_value_to_tokens map
@@ -243,11 +243,10 @@ impl Parser {
             let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
             for val in &self.injected_values {
                 for res_val in self.resolved_symbol_table.remove_symbol(&val) {
-                    let (_, tokens) = self
-                        .get_tokens_from_resolved_value(&res_val)
-                        .map_err(|cause| InjectionError {
-                            cause: InjectionRootError::TokensFromResolvedValueError(cause),
-                        })?
+                    let (_, tokens) = self.get_tokens_from_resolved_value(&res_val)
+                        .with_context(|_|
+                            format_err!("Error when retrieving tokens of resolved value '{}'",
+                            val))?
                         .clone();
                     self.resolved_value_to_tokens.remove(&res_val);
                     for tok in tokens {
@@ -257,9 +256,10 @@ impl Parser {
                                 v.remove(&res_val);
                                 v
                             })
-                            .ok_or_else(|| InjectionError {
-                                cause: InjectionRootError::ResolvedValuesFromTokenError { key: tok },
-                            })?;
+                            .ok_or_else(||
+                                format_err!("Cannot find token index {} in `token_to_resolved_values`",
+                                tok)
+                            )?;
 
                         // Check the remaining resolved values containing the token
                         if remaining_values.is_empty() {
@@ -307,22 +307,23 @@ impl Parser {
     fn get_tokens_from_resolved_value(
         &self,
         resolved_value: &u32,
-    ) -> Result<&(u32, Vec<u32>), TokensFromResolvedValueError> {
-        Ok(self.resolved_value_to_tokens
+    ) -> Result<&(u32, Vec<u32>)> {
+        self.resolved_value_to_tokens
             .get(resolved_value)
-            .ok_or_else(|| TokensFromResolvedValueError::MissingKeyError {
-                key: *resolved_value,
-            })?)
+            .ok_or_else(||
+                format_err!("Cannot find resolved value index {} in `resolved_value_to_tokens`",
+                resolved_value))
     }
 
     /// get resolved values from token
     fn get_resolved_values_from_token(
         &self,
         token: &u32,
-    ) -> Result<&BTreeSet<u32>, ResolvedValuesFromTokenError> {
-        Ok(self.token_to_resolved_values
+    ) -> Result<&BTreeSet<u32>> {
+        self.token_to_resolved_values
             .get(token)
-            .ok_or_else(|| ResolvedValuesFromTokenError::MissingKeyError { key: *token })?)
+            .ok_or_else(||
+                format_err!("Cannot find token index {} in `token_to_resolved_values`", token))
     }
 
     /// Find all possible matches in a string.
@@ -333,17 +334,14 @@ impl Parser {
         &self,
         input: &str,
         threshold: f32,
-    ) -> Result<BinaryHeap<PossibleMatch>, FindPossibleMatchError> {
+    ) -> Result<BinaryHeap<PossibleMatch>> {
         let mut possible_matches: HashMap<u32, PossibleMatch> =
             HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
         for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
             if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
-                let res_vals_from_token = self.get_resolved_values_from_token(&value)
-                    .map_err(|cause| FindPossibleMatchError {
-                        cause: FindPossibleMatchRootError::ResolvedValuesFromTokenError(cause),
-                    })?;
+                let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
                 if res_vals_from_token.is_empty() {
                     continue;
                 }
@@ -390,8 +388,7 @@ impl Parser {
                             *value,
                             range.clone(),
                             threshold,
-                            &mut matches_heap,
-                        ).map_err(|cause| FindPossibleMatchError { cause })?;
+                            &mut matches_heap)?;
                     }
                 }
             }
@@ -422,7 +419,7 @@ impl Parser {
         mut matches_heap: &mut BinaryHeap<PossibleMatch>,
         skipped_tokens: &mut HashMap<usize, (Range<usize>, u32)>,
         threshold: f32,
-    ) -> Result<(), FindPossibleMatchError> {
+    ) -> Result<()> {
         match possible_matches.entry(res_val) {
             Entry::Occupied(mut entry) => {
                 self.update_previous_match(
@@ -431,8 +428,7 @@ impl Parser {
                     value,
                     range,
                     threshold,
-                    &mut matches_heap,
-                ).map_err(|cause| FindPossibleMatchError { cause })?;
+                    &mut matches_heap)?;
             }
             Entry::Vacant(entry) => {
                 self.insert_new_possible_match(
@@ -441,8 +437,7 @@ impl Parser {
                     range,
                     token_idx,
                     threshold,
-                    &skipped_tokens)
-                    .map_err(|cause| FindPossibleMatchError { cause })?
+                    &skipped_tokens)?
                     .map(|new_possible_match| {
                         entry.insert(new_possible_match);
                     });
@@ -459,7 +454,7 @@ impl Parser {
         range: Range<usize>,
         threshold: f32,
         ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
-    ) -> Result<(), FindPossibleMatchRootError> {
+    ) -> Result<()> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(&possible_match.resolved_value).unwrap();
 
         if token_idx == possible_match.last_token_in_input + 1 {
@@ -484,20 +479,15 @@ impl Parser {
         // PossibleMatch cannot be grown further.
         // We start a new PossibleMatch.
 
-        if check_threshold(
-            possible_match.n_consumed_tokens,
-            possible_match.raw_value_length - possible_match.n_consumed_tokens,
-            threshold,
-        ) {
+        if possible_match.check_threshold(threshold) {
             matches_heap.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let last_token_in_resolution = otokens.iter()
+        let last_token_in_resolution = otokens
+            .iter()
             .position(|e| *e == value)
-            .ok_or_else(|| FindPossibleMatchRootError::MissingTokenFromList {
-                token_list: otokens.clone(),
-                value,
-            })?;
+            .ok_or_else(|| format_err!("Missing token {} from list {:?}", value, otokens.clone()))?;
+
         *possible_match = PossibleMatch {
             resolved_value: possible_match.resolved_value,
             range,
@@ -522,14 +512,12 @@ impl Parser {
         token_idx: usize,
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
-    ) -> Result<Option<PossibleMatch>, FindPossibleMatchRootError> {
+    ) -> Result<Option<PossibleMatch>> {
         let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val).unwrap();
-        let last_token_in_resolution = otokens.iter().position(|e| *e == value).ok_or_else(|| {
-            FindPossibleMatchRootError::MissingTokenFromList {
-                token_list: otokens.clone(),
-                value,
-            }
-        })?;
+        let last_token_in_resolution = otokens
+            .iter()
+            .position(|e| *e == value)
+            .ok_or_else(|| format_err!("Missing token {} from list {:?}", value, otokens.clone()))?;
 
         let mut possible_match = PossibleMatch {
             resolved_value: res_val,
@@ -576,18 +564,12 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>, RunError> {
+    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>> {
         let matches_heap = self
             .find_possible_matches(input, self.threshold)
-            .map_err(|cause| RunError {
-                input: input.to_string(),
-                cause: RunRootError::FindPossibleMatchError(cause),
-            })?;
-        self.parse_input(input, matches_heap)
-            .map_err(|cause| RunError {
-                input: input.to_string(),
-                cause: RunRootError::ParseInputError(cause),
-            })
+            .with_context(|_| format_err!("Error when finding possible matches"))?;
+        Ok(self.parse_input(input, matches_heap)
+            .with_context(|_| format_err!("Error when filtering possible matches"))?)
     }
 
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
@@ -631,7 +613,7 @@ impl Parser {
         &self,
         input: &str,
         mut matches_heap: BinaryHeap<PossibleMatch>,
-    ) -> Result<Vec<ParsedValue>, ParseInputError> {
+    ) -> Result<Vec<ParsedValue>> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
@@ -680,9 +662,9 @@ impl Parser {
                     .resolved_symbol_table
                     .find_index(&possible_match.resolved_value)
                     .cloned()
-                    .ok_or_else(|| ParseInputError::MissingKeyError {
-                        key: possible_match.resolved_value
-                    })?,
+                    .ok_or_else(||
+                        format_err!("Missing key for resolved value {}",
+                        possible_match.resolved_value))?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -693,102 +675,53 @@ impl Parser {
         Ok(parsing.into_sorted_vec())
     }
 
-    fn get_parser_config(&self) -> Result<ParserConfig, GetParserConfigError> {
-        Ok(ParserConfig {
+    fn get_parser_config(&self) -> ParserConfig {
+        ParserConfig {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             threshold: self.threshold,
             stop_words: self.get_stop_words(),
             edge_cases: self.get_edge_cases(),
-        })
+        }
     }
 
     /// Dump the parser to a folder
-    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<(), DumpError> {
+    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<()> {
         fs::create_dir(folder_name.as_ref())
-            .map_err(|cause| SerializationError::Io {
-                path: folder_name.as_ref().to_path_buf(),
-                cause,
-            })
-            .map_err(|cause| DumpError {
-                cause: DumpRootError::SerializationError(cause),
-            })?;
+            .with_context(|_| format_err!("Error when creating persisting directory"))?;
 
-        let config = self.get_parser_config().map_err(|cause| DumpError {
-            cause: DumpRootError::GetParserConfigError(cause),
-        })?;
+        let config = self.get_parser_config();
 
         let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))
-            .map_err(|cause| SerializationError::Io {
-                path: folder_name.as_ref().join(METADATA_FILENAME).to_path_buf(),
-                cause,
-            })
-            .map_err(|cause| DumpError {
-                cause: DumpRootError::SerializationError(cause),
-            })?;
+            .with_context(|_| format_err!("Error when creating metadata file"))?;
 
         serde_json::to_writer(writer, &config)
-            .map_err(|cause| SerializationError::InvalidConfigFormat {
-                path: folder_name.as_ref().join(METADATA_FILENAME),
-                cause,
-            })
-            .map_err(|cause| DumpError {
-                cause: DumpRootError::SerializationError(cause),
-            })?;
+            .with_context(|_| format_err!("Error when serializing the parser's metadata"))?;
 
         let parser_path = folder_name.as_ref().join(config.parser_filename);
         let mut writer = fs::File::create(&parser_path)
-            .map_err(|cause| SerializationError::Io {
-                path: parser_path.clone(),
-                cause,
-            })
-            .map_err(|cause| DumpError {
-                cause: DumpRootError::SerializationError(cause),
-            })?;
+            .with_context(|_| format_err!("Error when creating the parser file"))?;
 
         self.serialize(&mut Serializer::new(&mut writer))
-            .map_err(|cause| SerializationError::ParserSerializationError {
-                path: parser_path,
-                cause,
-            })
-            .map_err(|cause| DumpError {
-                cause: DumpRootError::SerializationError(cause),
-            })?;
+            .with_context(|_| format_err!("Error when serializing the parser"))?;
         Ok(())
     }
 
     /// Load a resolver from a folder
-    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser, LoadError> {
+    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser> {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
-        let metadata_file = fs::File::open(&metadata_path).map_err(|cause| LoadError {
-            cause: DeserializationError::Io {
-                path: metadata_path.clone(),
-                cause,
-            },
-        })?;
+        let metadata_file = fs::File::open(&metadata_path)
+            .with_context(|_| format_err!("Error when opening the metadata file"))?;
 
-        let config: ParserConfig =
-            serde_json::from_reader(metadata_file).map_err(|cause| LoadError {
-                cause: DeserializationError::ReadConfigError {
-                    path: metadata_path,
-                    cause,
-                },
-            })?;
+        let config: ParserConfig = serde_json::from_reader(metadata_file)
+            .with_context(|_| format_err!("Error when deserializing the metadata"))?;
 
         let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let reader = fs::File::open(&parser_path).map_err(|cause| LoadError {
-            cause: DeserializationError::Io {
-                path: parser_path.clone(),
-                cause,
-            },
-        })?;
+        let reader = fs::File::open(&parser_path)
+            .with_context(|_| format_err!("Error when opening the parser file"))?;
 
-        Ok(from_read(reader).map_err(|cause| LoadError {
-            cause: DeserializationError::ParserDeserializationError {
-                path: parser_path,
-                cause,
-            },
-        })?)
+        Ok(from_read(reader)
+            .with_context(|_| format_err!("Error when deserializing the parser"))?)
     }
 }
 
