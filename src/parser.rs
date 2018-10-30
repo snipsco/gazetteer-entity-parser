@@ -455,7 +455,7 @@ impl Parser {
         threshold: f32,
         ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
     ) -> Result<()> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(&possible_match.resolved_value).unwrap();
+        let (rank, otokens) = self.get_tokens_from_resolved_value(&possible_match.resolved_value)?;
 
         if token_idx == possible_match.last_token_in_input + 1 {
             // Grow the last Possible Match
@@ -513,7 +513,7 @@ impl Parser {
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
     ) -> Result<Option<PossibleMatch>> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val).unwrap();
+        let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val)?;
         let last_token_in_resolution = otokens
             .iter()
             .position(|e| *e == value)
@@ -740,7 +740,6 @@ mod tests {
     use failure::ResultExt;
     use parser_builder::ParserBuilder;
     use std::time::Instant;
-    use std::fs::File;
 
     #[test]
     fn test_serialization_deserialization() {

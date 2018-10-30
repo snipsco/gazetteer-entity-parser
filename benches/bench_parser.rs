@@ -14,7 +14,6 @@ use rand::thread_rng;
 use rand::Rng;
 
 use gazetteer_entity_parser::*;
-use std::fs::File;
 
 pub fn test_data_path() -> ::std::path::PathBuf {
     ::dinghy_test::try_test_file_path("data")
@@ -129,16 +128,7 @@ fn parsing_high_redundancy(c: &mut Criterion) {
 }
 
 fn loading(c: &mut Criterion) {
-    let gazetteer_path = test_data_path().join("benches").join("gazetteer.json");
-    let gazetteer = if !gazetteer_path.exists() {
-        let (gazetteer, _) = generate_random_gazetteer(100, 1000, 5);
-        let gazetteer_file = File::create(gazetteer_path).unwrap();
-        serde_json::to_writer(gazetteer_file, &gazetteer).unwrap();
-        gazetteer
-    } else {
-        let gazetteer_file = File::open(gazetteer_path).unwrap();
-        serde_json::from_reader(gazetteer_file).unwrap()
-    };
+    let (gazetteer, _) = generate_random_gazetteer(100, 1000, 5);
     let parser_directory = test_data_path().join("benches").join("parser");
     if !parser_directory.exists() {
         let parser = ParserBuilder::default()
