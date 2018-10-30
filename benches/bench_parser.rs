@@ -1,19 +1,24 @@
 #[macro_use]
 extern crate criterion;
+extern crate dinghy_test;
 extern crate gazetteer_entity_parser;
-extern crate mio_httpc;
 extern crate rand;
 extern crate serde_json;
 
-use gazetteer_entity_parser::{EntityValue, Gazetteer, ParsedValue, ParserBuilder};
-use mio_httpc::CallBuilder;
+use std::collections::HashSet;
+
+use criterion::Criterion;
 use rand::distributions::Alphanumeric;
 use rand::seq::sample_iter;
 use rand::thread_rng;
 use rand::Rng;
-use std::collections::HashSet;
 
-use criterion::Criterion;
+use gazetteer_entity_parser::*;
+
+pub fn test_data_path() -> ::std::path::PathBuf {
+    ::dinghy_test::try_test_file_path("data")
+        .unwrap_or_else(|| "data".into())
+}
 
 /// Function generating a random string representing a single word of various length
 fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
@@ -22,299 +27,123 @@ fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
 }
 
 /// Random string generator with tunable redundancy to make it harder for the parser
+#[derive(Clone)]
 struct RandomStringGenerator {
-    unique_strings: Vec<String>,
+    vocabulary: Vec<String>,
+    max_words: usize,
     rng: rand::ThreadRng,
     already_generated: HashSet<String>,
 }
 
 impl RandomStringGenerator {
-    fn new(n_unique_strings: usize) -> RandomStringGenerator {
+    fn new(vocab_size: usize, max_words: usize) -> RandomStringGenerator {
         let mut rng = thread_rng();
-        let unique_strings = (0..n_unique_strings)
+        let unique_strings = (0..vocab_size)
             .map(|_| generate_random_string(&mut rng))
             .collect();
         RandomStringGenerator {
-            unique_strings,
-            rng: rng,
+            vocabulary: unique_strings,
+            max_words,
+            rng,
             already_generated: HashSet::new(),
         }
     }
+}
 
-    fn generate(&mut self, max_words: usize) -> String {
+impl Iterator for RandomStringGenerator {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
         loop {
-            let n_words = self.rng.gen_range(1, max_words);
-            let mut s: Vec<String> = vec![];
-            for sample_idx in
-                sample_iter(&mut self.rng, 0..self.unique_strings.len(), n_words).unwrap()
-            {
-                s.push(self.unique_strings.get(sample_idx).unwrap().to_string());
-            }
-            let value = s.join(" ");
-            if !self.already_generated.contains(&value) {
-                self.already_generated.insert(value.clone());
-                break value;
+            let n_words = self.rng.gen_range(1, self.max_words);
+            let generated_value = sample_iter(&mut self.rng, self.vocabulary.iter(), n_words)
+                .unwrap()
+                .iter()
+                .map(|sample_string| sample_string.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !self.already_generated.contains(&generated_value) {
+                self.already_generated.insert(generated_value.clone());
+                break Some(generated_value);
             }
         }
     }
 }
 
-fn artist_gazetteer(c: &mut Criterion) {
-    // Real-world artist gazetteer
-    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let gaz: Gazetteer = serde_json::from_reader(&*body).unwrap();
-
-    let n_stop_words = 30;
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("I'd like to listen to some rolling stones")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "rolling stones".to_string(),
-            resolved_value: "The Rolling Stones".to_string(),
-            range: 27..41,
-        }]
-    );
-
-    c.bench_function(
-        "Parse artist request - rolling stones - threhold 0.6",
-        move |b| b.iter(|| parser.run("I'd like to listen to some rolling stones")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz)
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser.run("I'd like to listen to the stones").unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "the stones".to_string(),
-            resolved_value: "The Stones".to_string(),
-            range: 22..32,
-        }]
-    );
-
-    c.bench_function(
-        "Parse artist request - the stones - threshold 0.6",
-        move |b| b.iter(|| parser.run("I'd like to listen to the stones")),
-    );
+fn generate_random_gazetteer(
+    vocab_size: usize,
+    nb_entity_values: usize,
+    max_words: usize,
+) -> (Gazetteer, RandomStringGenerator) {
+    let rsg = RandomStringGenerator::new(vocab_size, max_words);
+    let entity_values = rsg
+        .clone()
+        .take(nb_entity_values)
+        .map(|string| EntityValue {
+            resolved_value: string.to_lowercase(),
+            raw_value: string,
+        })
+        .collect();
+    let gazetteer = Gazetteer { data: entity_values };
+    (gazetteer, rsg)
 }
 
-fn album_gazetteer(c: &mut Criterion) {
-    // Real-world albums gazetteer
-    let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-    let gaz: Gazetteer = serde_json::from_reader(&*body).unwrap();
-    let n_stop_words = 50;
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("je veux écouter le black and white album")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "black and white album".to_string(),
-            resolved_value: "The Black and White Album".to_string(),
-            range: 19..40,
-        }]
-    );
-    c.bench_function(
-        "Parse album request - black and white album - threhold 0.6",
-        move |b| b.iter(|| parser.run("Je veux écouter le black and white album")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("je veux écouter dark side of the moon")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "dark side of the moon".to_string(),
-            resolved_value: "Dark Side of the Moon".to_string(),
-            range: 16..37,
-        }]
-    );
-
-    c.bench_function(
-        "Parse album request - je veux ecouter dark side of the moon - threshold 0.6",
-        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.5)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("je veux écouter dark side of the moon")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![
-            ParsedValue {
-                raw_value: "je veux".to_string(),
-                resolved_value: "Je veux du bonheur".to_string(),
-                range: 0..7,
-            },
-            ParsedValue {
-                raw_value: "dark side of the moon".to_string(),
-                resolved_value: "Dark Side of the Moon".to_string(),
-                range: 16..37,
-            },
-        ]
-    );
-
-    c.bench_function(
-        "Parse album request - je veux ecouter dark side of the moon - threshold 0.5",
-        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.7)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("je veux écouter dark side of the moon")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "dark side of the moon".to_string(),
-            resolved_value: "Dark Side of the Moon".to_string(),
-            range: 16..37,
-        }]
-    );
-
-    c.bench_function(
-        "Parse album request - je veux ecouter dark side of the moon - threshold 0.7",
-        move |b| b.iter(|| parser.run("je veux écouter dark side of the moon")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz.clone())
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("the veux écouter dark side of the moon")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "dark side of the moon".to_string(),
-            resolved_value: "Dark Side of the Moon".to_string(),
-            range: 17..38,
-        }]
-    );
-
-    c.bench_function(
-        "Parse album request - the veux ecouter dark side of the moon - threshold 0.6",
-        move |b| b.iter(|| parser.run("the veux écouter dark side of the moon")),
-    );
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gaz)
-        .minimum_tokens_ratio(0.5)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    let parsed = parser
-        .run("the veux écouter dark side of the moon")
-        .unwrap();
-    assert_eq!(
-        parsed,
-        vec![ParsedValue {
-            raw_value: "dark side of the moon".to_string(),
-            resolved_value: "Dark Side of the Moon".to_string(),
-            range: 17..38,
-        }]
-    );
-
-    c.bench_function(
-        "Parse album request - the veux ecouter dark side of the moon - threshold 0.5",
-        move |b| b.iter(|| parser.run("the veux écouter dark side of the moon")),
-    );
-}
-
-fn random_strings(c: &mut Criterion) {
-    // Random gazetteer with low redundancy
-    let mut rsg = RandomStringGenerator::new(10000);
-    let mut gazetteer = Gazetteer::default();
-    for _ in 1..150000 {
-        let val = rsg.generate(10);
-        gazetteer.add(EntityValue {
-            raw_value: val.clone().to_lowercase(),
-            resolved_value: val,
-        });
-    }
-
-    let n_stop_words = 50;
+fn generate_random_parser(
+    vocab_size: usize,
+    nb_entity_values: usize,
+    max_words: usize,
+    minimum_tokens_ratio: f32,
+    n_stop_words: usize,
+) -> (Parser, RandomStringGenerator) {
+    let (gazetteer, rsg) = generate_random_gazetteer(vocab_size, nb_entity_values, max_words);
     let parser = ParserBuilder::default()
         .gazetteer(gazetteer)
-        .minimum_tokens_ratio(0.5)
+        .minimum_tokens_ratio(minimum_tokens_ratio)
         .n_stop_words(n_stop_words)
         .build()
         .unwrap();
+    (parser, rsg)
+}
 
+fn get_low_redundancy_parser() -> (Parser, RandomStringGenerator) {
+    generate_random_parser(10000, 100000, 10, 0.5, 50)
+}
+
+fn get_high_redundancy_parser() -> (Parser, RandomStringGenerator) {
+    generate_random_parser(100, 100000, 5, 0.5, 50)
+}
+
+fn parsing_low_redundancy(c: &mut Criterion) {
+    let (parser, mut rsg) = get_low_redundancy_parser();
     c.bench_function("Parse random value - low redundancy", move |b| {
-        b.iter(|| parser.run(&rsg.generate(10)))
-    });
-
-    // Random gazetteer with high redundancy
-    let mut rsg = RandomStringGenerator::new(100);
-    let mut gazetteer = Gazetteer::default();
-    for _ in 1..100000 {
-        let val = rsg.generate(5);
-        gazetteer.add(EntityValue {
-            raw_value: val.clone(),
-            resolved_value: val.to_lowercase(),
-        });
-    }
-
-    let parser = ParserBuilder::default()
-        .gazetteer(gazetteer)
-        .minimum_tokens_ratio(0.6)
-        .n_stop_words(n_stop_words)
-        .build()
-        .unwrap();
-
-    c.bench_function("Parse random value - high redundancy", move |b| {
-        b.iter(|| parser.run(&rsg.generate(4)))
+        b.iter(|| parser.run(&rsg.next().unwrap()))
     });
 }
 
-criterion_group!(benches, random_strings, artist_gazetteer, album_gazetteer);
+fn parsing_high_redundancy(c: &mut Criterion) {
+    let (parser, mut rsg) = get_high_redundancy_parser();
+    c.bench_function("Parse random value - high redundancy", move |b| {
+        b.iter(|| parser.run(&rsg.next().unwrap()))
+    });
+}
+
+fn loading(c: &mut Criterion) {
+    let (gazetteer, _) = generate_random_gazetteer(100, 1000, 5);
+    let parser_directory = test_data_path().join("benches").join("parser");
+    if !parser_directory.exists() {
+        let parser = ParserBuilder::default()
+            .gazetteer(gazetteer)
+            .minimum_tokens_ratio(0.5)
+            .n_stop_words(50)
+            .build()
+            .unwrap();
+
+        parser.dump(&parser_directory).unwrap();
+    }
+    c.bench_function("Loading random gazetteer parser with low redundancy", move |b| {
+        b.iter(|| Parser::from_folder(parser_directory.clone()).unwrap())
+    });
+}
+
+criterion_group!(benches, parsing_low_redundancy, parsing_high_redundancy, loading);
 criterion_main!(benches);
