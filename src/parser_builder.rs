@@ -1,7 +1,6 @@
 use data::Gazetteer;
 use errors::*;
 use parser::Parser;
-use std::result::Result;
 use EntityValue;
 
 /// Struct exposing a builder allowing to configure and build a Parser
@@ -69,32 +68,22 @@ impl ParserBuilder {
     }
 
     /// Instantiate a Parser from the ParserBuilder
-    pub fn build(self) -> Result<Parser, BuildError> {
+    pub fn build(self) -> Result<Parser> {
         if self.threshold < 0.0 || self.threshold > 1.0 {
-            return Err(BuildError { cause: BuildRootError::InvalidThresholdValue(self.threshold)})
+            return Err(
+                format_err!("Invalid value for threshold ({}), it must be between 0.0 and 1.0",
+                self.threshold))
         }
-        let mut parser = Parser::default();
-        for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
-            parser
-                .add_value(entity_value, rank as u32)
-                .map_err(|cause| BuildError {
-                    cause: BuildRootError::AddValueError(cause),
-                })?;
-        }
+        let mut parser = self.gazetteer.data
+            .into_iter()
+            .enumerate()
+            .fold(Parser::default(), |mut parser, (rank, entity_value)| {
+                parser.add_value(entity_value, rank as u32);
+                parser
+            });
         parser.set_threshold(self.threshold);
-        if let Some(n) = self.n_gazetteer_stop_words {
-            parser
-                .set_stop_words(n, self.additional_stop_words)
-                .map_err(|cause| BuildError {
-                    cause: BuildRootError::SetStopWordsError(cause),
-                })?;
-        } else if let Some(_) = self.additional_stop_words {
-            parser
-                .set_stop_words(0, self.additional_stop_words)
-                .map_err(|cause| BuildError {
-                    cause: BuildRootError::SetStopWordsError(cause),
-                })?;
-        }
+        parser.set_stop_words(self.n_gazetteer_stop_words.unwrap_or(0),
+                              self.additional_stop_words);
         Ok(parser)
     }
 }
@@ -137,12 +126,10 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in gazetteer.data.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         expected_parser.set_threshold(0.5);
-        expected_parser
-            .set_stop_words(2, Some(vec!["hello".to_string()]))
-            .unwrap();
+        expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
 
         assert_eq!(expected_parser, parser_from_builder);
     }
@@ -184,15 +171,13 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in entity_values_1.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         for (rank, entity_value) in entity_values_2.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, 1 + rank as u32).unwrap();
+            expected_parser.add_value(entity_value, 1 + rank as u32);
         }
         expected_parser.set_threshold(0.5);
-        expected_parser
-            .set_stop_words(2, Some(vec!["hello".to_string()]))
-            .unwrap();
+        expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
 
         assert_eq!(expected_parser, parser_from_builder);
     }
@@ -230,12 +215,10 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         expected_parser.set_threshold(0.5);
-        expected_parser
-            .set_stop_words(2, Some(vec!["hello".to_string()]))
-            .unwrap();
+        expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
 
         assert_eq!(expected_parser, parser_from_builder);
     }
