@@ -1,26 +1,31 @@
-use constants::*;
-use data::EntityValue;
-use errors::*;
-use failure::ResultExt;
-use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
-use rmps::{from_read, Serializer};
-use serde::Serialize;
-use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
+
+use failure::ResultExt;
+use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
+use rmps::{from_read, Serializer};
+use serde::{Deserialize, Serialize};
+use serde_json;
+
+use constants::*;
+use data::EntityValue;
+use errors::*;
 use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
-use utils::{check_threshold, whitespace_tokenizer};
+use utils::{check_threshold, Token, Tokenizer, WhitespaceTokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
 /// added to the parser matters: In case of ambiguity between two parsings, the Parser will output
 /// the value that was added first (see Gazetteer).
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
-pub struct Parser {
+pub struct Parser<T = WhitespaceTokenizer>
+where
+    for<'a> T: Tokenizer<'a>,
+{
     // Symbol table for the raw tokens
     tokens_symbol_table: TokenSymbolTable,
     // Symbol table for the resolved values
@@ -43,6 +48,8 @@ pub struct Parser {
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
     threshold: f32,
+    // Tokenizer used to process the input
+    tokenizer: T,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -138,7 +145,10 @@ impl PartialOrd for ParsedValue {
     }
 }
 
-impl Parser {
+impl<T> Parser<T>
+where
+    for<'a> T: Tokenizer<'a>,
+{
     /// Add a single entity value, along with its rank, to the parser
     /// The ranks of the other entity values will not be changed
     pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
@@ -148,8 +158,8 @@ impl Parser {
             .resolved_symbol_table
             .add_symbol(entity_value.resolved_value);
 
-        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            let token_idx = self.tokens_symbol_table.add_symbol(token);
+        for token in self.tokenizer.tokenize(&entity_value.raw_value) {
+            let token_idx = self.tokens_symbol_table.add_symbol(token.term);
 
             // Update token_to_resolved_values map
             self.token_to_resolved_values
@@ -350,7 +360,10 @@ impl Parser {
     }
 }
 
-impl Parser {
+impl<T> Parser<T>
+where
+    for<'de, 'a> T: Tokenizer<'a> + Serialize + Deserialize<'de>,
+{
     /// Dump the parser to a folder
     pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<()> {
         fs::create_dir(folder_name.as_ref())
@@ -374,7 +387,7 @@ impl Parser {
     }
 
     /// Load a parser from a folder
-    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser> {
+    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser<T>> {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
         let metadata_file = fs::File::open(&metadata_path)
             .with_context(|_| format_err!("Error when opening the metadata file"))?;
@@ -391,7 +404,10 @@ impl Parser {
     }
 }
 
-impl Parser {
+impl<T> Parser<T>
+where
+    for<'a> T: Tokenizer<'a>,
+{
     /// get resolved value
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> Result<&(u32, Vec<u32>)> {
         self.resolved_value_to_tokens
@@ -446,8 +462,8 @@ impl Parser {
             HashMap::with_capacity_and_hasher(1000, Default::default());
         let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
-        for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
-            if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
+        for (token_idx, token) in self.tokenizer.tokenize(input).enumerate() {
+            if let Some(value) = self.tokens_symbol_table.find_symbol(&token.term) {
                 let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
                 if res_vals_from_token.is_empty() {
                     continue;
@@ -458,7 +474,7 @@ impl Parser {
                             *value,
                             *res_val,
                             token_idx,
-                            range.clone(),
+                            token.range.clone(),
                             &mut possible_matches,
                             &mut matches_heap,
                             &mut skipped_tokens,
@@ -466,7 +482,7 @@ impl Parser {
                         )?;
                     }
                 } else {
-                    skipped_tokens.insert(token_idx, (range.clone(), *value));
+                    skipped_tokens.insert(token_idx, (token.range.clone(), *value));
                     // Iterate over all edge cases and try to add or update corresponding
                     // PossibleMatch's. Using a threshold of 1.
                     for res_val in self.edge_cases.iter() {
@@ -475,7 +491,7 @@ impl Parser {
                                 *value,
                                 *res_val,
                                 token_idx,
-                                range.clone(),
+                                token.range.clone(),
                                 &mut possible_matches,
                                 &mut matches_heap,
                                 &mut skipped_tokens,
@@ -497,7 +513,7 @@ impl Parser {
                             &mut possible_match,
                             token_idx,
                             *value,
-                            range.clone(),
+                            token.range.clone(),
                             threshold,
                             &mut matches_heap,
                         )?;
@@ -683,11 +699,14 @@ impl Parser {
     }
 
     fn reduce_possible_match(
+        &self,
         input: &str,
         possible_match: PossibleMatch,
         overlapping_tokens: HashSet<usize>,
     ) -> Option<PossibleMatch> {
-        let reduced_tokens = whitespace_tokenizer(input)
+        let reduced_tokens = self
+            .tokenizer
+            .tokenize(input)
             .enumerate()
             .filter(|(token_idx, _)| {
                 *token_idx >= possible_match.tokens_range.start
@@ -698,8 +717,20 @@ impl Parser {
 
         match (reduced_tokens.first(), reduced_tokens.last()) {
             (
-                Some((first_token_idx, (first_token_range, _))),
-                Some((last_token_idx, (last_token_range, _))),
+                Some((
+                    first_token_idx,
+                    Token {
+                        range: first_token_range,
+                        term: _,
+                    },
+                )),
+                Some((
+                    last_token_idx,
+                    Token {
+                        range: last_token_range,
+                        term: _,
+                    },
+                )),
             ) => Some(PossibleMatch {
                 resolved_value: possible_match.resolved_value,
                 range: (first_token_range.start)..(last_token_range.end),
@@ -721,7 +752,7 @@ impl Parser {
         mut matches_heap: BinaryHeap<PossibleMatch>,
     ) -> Result<Vec<ParsedValue>> {
         let mut taken_tokens: HashSet<usize> = HashSet::default();
-        let n_total_tokens = whitespace_tokenizer(input).count();
+        let n_total_tokens = self.tokenizer.tokenize(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
 
         while !matches_heap.is_empty() && taken_tokens.len() < n_total_tokens {
@@ -741,7 +772,7 @@ impl Parser {
 
             if !overlapping_tokens.is_empty() {
                 let opt_reduced_possible_match =
-                    Self::reduce_possible_match(input, possible_match, overlapping_tokens);
+                    self.reduce_possible_match(input, possible_match, overlapping_tokens);
                 if let Some(reduced_possible_match) = opt_reduced_possible_match {
                     let threshold = if self
                         .edge_cases
@@ -802,16 +833,20 @@ mod tests {
     extern crate mio_httpc;
     extern crate tempfile;
 
-    use self::mio_httpc::CallBuilder;
-    use self::tempfile::tempdir;
-    #[allow(unused_imports)]
-    use super::*;
+    use std::time::Instant;
+
+    use failure::ResultExt;
+
     #[allow(unused_imports)]
     use data::EntityValue;
     use data::Gazetteer;
-    use failure::ResultExt;
     use parser_builder::ParserBuilder;
-    use std::time::Instant;
+
+    #[allow(unused_imports)]
+    use super::*;
+
+    use self::mio_httpc::CallBuilder;
+    use self::tempfile::tempdir;
 
     #[test]
     fn test_serialization_deserialization() {

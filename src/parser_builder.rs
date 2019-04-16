@@ -1,29 +1,41 @@
 use data::Gazetteer;
 use errors::*;
 use parser::Parser;
+use utils::{Tokenizer, WhitespaceTokenizer};
 use EntityValue;
 
 /// Struct exposing a builder allowing to configure and build a Parser
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
-pub struct ParserBuilder {
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+pub struct ParserBuilder<T = WhitespaceTokenizer>
+where
+    for<'a> T: Tokenizer<'a>,
+{
     gazetteer: Gazetteer,
     threshold: f32,
     n_gazetteer_stop_words: Option<usize>,
     additional_stop_words: Option<Vec<String>>,
+    tokenizer: T,
 }
 
-impl Default for ParserBuilder {
+impl<T> Default for ParserBuilder<T>
+where
+    for<'de, 'a> T: Tokenizer<'a> + Default,
+{
     fn default() -> Self {
         ParserBuilder {
             gazetteer: Gazetteer::default(),
             threshold: 1.0,
             n_gazetteer_stop_words: None,
             additional_stop_words: None,
+            tokenizer: T::default(),
         }
     }
 }
 
-impl ParserBuilder {
+impl<T> ParserBuilder<T>
+where
+    for<'de, 'a> T: Tokenizer<'a> + Default,
+{
     /// Define the gazetteer that the parser will use. This will replace any previously specified
     /// gazetteer.
     pub fn gazetteer(mut self, gazetteer: Gazetteer) -> Self {
@@ -68,31 +80,36 @@ impl ParserBuilder {
     }
 
     /// Instantiate a Parser from the ParserBuilder
-    pub fn build(self) -> Result<Parser> {
+    pub fn build(self) -> Result<Parser<T>> {
         if self.threshold < 0.0 || self.threshold > 1.0 {
-            return Err(
-                format_err!("Invalid value for threshold ({}), it must be between 0.0 and 1.0",
-                self.threshold))
+            return Err(format_err!(
+                "Invalid value for threshold ({}), it must be between 0.0 and 1.0",
+                self.threshold
+            ));
         }
-        let mut parser = self.gazetteer.data
-            .into_iter()
-            .enumerate()
-            .fold(Parser::default(), |mut parser, (rank, entity_value)| {
+        let mut parser = self.gazetteer.data.into_iter().enumerate().fold(
+            Parser::default(),
+            |mut parser, (rank, entity_value)| {
                 parser.add_value(entity_value, rank as u32);
                 parser
-            });
+            },
+        );
         parser.set_threshold(self.threshold);
-        parser.set_stop_words(self.n_gazetteer_stop_words.unwrap_or(0),
-                              self.additional_stop_words);
+        parser.set_stop_words(
+            self.n_gazetteer_stop_words.unwrap_or(0),
+            self.additional_stop_words,
+        );
         Ok(parser)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use data::EntityValue;
     use serde_json;
+
+    use data::EntityValue;
+
+    use super::*;
 
     #[test]
     fn test_parser_builder_using_gazetteer() {
@@ -109,9 +126,11 @@ mod tests {
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
                 raw_value: "the stones".to_string(),
-            }
+            },
         ];
-        let gazetteer = Gazetteer { data: entity_values };
+        let gazetteer = Gazetteer {
+            data: entity_values,
+        };
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer.clone())
@@ -119,9 +138,7 @@ mod tests {
             .additional_stop_words(vec!["hello".to_string()]);
 
         // When
-        let parser_from_builder = builder
-            .build()
-            .unwrap();
+        let parser_from_builder = builder.build().unwrap();
 
         // Then
         let mut expected_parser = Parser::default();
@@ -137,12 +154,10 @@ mod tests {
     #[test]
     fn test_parser_builder_using_extended_gazetteer() {
         // Given
-        let entity_values_1 = vec![
-            EntityValue {
-                resolved_value: "The Flying Stones".to_string(),
-                raw_value: "the flying stones".to_string(),
-            }
-        ];
+        let entity_values_1 = vec![EntityValue {
+            resolved_value: "The Flying Stones".to_string(),
+            raw_value: "the flying stones".to_string(),
+        }];
 
         let entity_values_2 = vec![
             EntityValue {
@@ -152,10 +167,14 @@ mod tests {
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
                 raw_value: "the stones".to_string(),
-            }
+            },
         ];
-        let gazetteer_1 = Gazetteer { data: entity_values_1.clone() };
-        let gazetteer_2 = Gazetteer { data: entity_values_2.clone() };
+        let gazetteer_1 = Gazetteer {
+            data: entity_values_1.clone(),
+        };
+        let gazetteer_2 = Gazetteer {
+            data: entity_values_2.clone(),
+        };
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer_1)
@@ -164,9 +183,7 @@ mod tests {
             .additional_stop_words(vec!["hello".to_string()]);
 
         // When
-        let parser_from_builder = builder
-            .build()
-            .unwrap();
+        let parser_from_builder = builder.build().unwrap();
 
         // Then
         let mut expected_parser = Parser::default();
@@ -197,7 +214,7 @@ mod tests {
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
                 raw_value: "the stones".to_string(),
-            }
+            },
         ];
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -208,9 +225,7 @@ mod tests {
             .additional_stop_words(vec!["hello".to_string()]);
 
         // When
-        let parser_from_builder = builder
-            .build()
-            .unwrap();
+        let parser_from_builder = builder.build().unwrap();
 
         // Then
         let mut expected_parser = Parser::default();
