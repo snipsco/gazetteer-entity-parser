@@ -42,19 +42,21 @@ Example
             .build()
             .unwrap();
 
-        let sentence = "My favourite artists are the stones and the fab four";
+        let sentence = "My favourite artists are the stones and the amazing fab four";
         let extracted_entities = parser.run(sentence).unwrap();
         assert_eq!(extracted_entities,
                    vec![
                        ParsedValue {
                            raw_value: "the stones".to_string(),
+                           matched_value: "the rolling stones".to_string(),
                            resolved_value: "The Rolling Stones".to_string(),
                            range: 25..35,
                        },
                        ParsedValue {
-                           raw_value: "the fab four".to_string(),
+                           raw_value: "fab four".to_string(),
+                           matched_value: "the fab four".to_string(),
                            resolved_value: "The Beatles".to_string(),
-                           range: 40..52,
+                           range: 52..60,
                        }]);
     }
 
