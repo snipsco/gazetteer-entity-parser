@@ -111,6 +111,7 @@ pub struct ParsedValue {
     // character-level
     pub range: Range<usize>,
     pub raw_value: String,
+    pub matched_value: String,
 }
 
 impl Ord for ParsedValue {
@@ -138,24 +139,6 @@ impl PartialOrd for ParsedValue {
 }
 
 impl Parser {
-    /// Prepend a list of entity values to the parser and update the ranks accordingly
-    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) {
-        // update rank of previous values
-        for res_val in self.resolved_symbol_table.get_all_indices() {
-            self.resolved_value_to_tokens
-                .entry(*res_val)
-                .and_modify(|(rank, _)| *rank += entity_values.len() as u32);
-        }
-        for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), rank as u32);
-        }
-
-        // Update the stop words and edge cases
-        let n_stop_words = self.n_stop_words;
-        let additional_stop_words = self.additional_stop_words.clone();
-        self.set_stop_words(n_stop_words, Some(additional_stop_words));
-    }
-
     /// Add a single entity value, along with its rank, to the parser
     /// The ranks of the other entity values will not be changed
     pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
@@ -182,6 +165,29 @@ impl Parser {
                 .and_modify(|(_, v)| v.push(token_idx))
                 .or_insert((rank, vec![token_idx]));
         }
+    }
+
+    /// Prepend a list of entity values to the parser and update the ranks accordingly
+    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) {
+        // update rank of previous values
+        for res_val in self.resolved_symbol_table.get_all_indices() {
+            self.resolved_value_to_tokens
+                .entry(*res_val)
+                .and_modify(|(rank, _)| *rank += entity_values.len() as u32);
+        }
+        for (rank, entity_value) in entity_values.into_iter().enumerate() {
+            self.add_value(entity_value.clone(), rank as u32);
+        }
+
+        // Update the stop words and edge cases
+        let n_stop_words = self.n_stop_words;
+        let additional_stop_words = self.additional_stop_words.clone();
+        self.set_stop_words(n_stop_words, Some(additional_stop_words));
+    }
+
+    /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold;
     }
 
     /// Update an internal set of stop words and corresponding edge cases.
@@ -247,6 +253,16 @@ impl Parser {
             .iter()
             .flat_map(|idx| self.resolved_symbol_table.find_index(idx).cloned())
             .collect()
+    }
+
+    /// Parse the input string `input` and output a vec of `ParsedValue`.
+    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>> {
+        let matches_heap = self
+            .find_possible_matches(input, self.threshold)
+            .with_context(|_| format_err!("Error when finding possible matches"))?;
+        Ok(self
+            .parse_input(input, matches_heap)
+            .with_context(|_| format_err!("Error when filtering possible matches"))?)
     }
 
     /// Add new values to an already trained Parser. This function is used for entity injection.
@@ -332,7 +348,50 @@ impl Parser {
         self.set_stop_words(n_stop_words, Some(additional_stop_words));
         Ok(())
     }
+}
 
+impl Parser {
+    /// Dump the parser to a folder
+    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<()> {
+        fs::create_dir(folder_name.as_ref())
+            .with_context(|_| format_err!("Error when creating persisting directory"))?;
+
+        let config = self.get_parser_config();
+
+        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))
+            .with_context(|_| format_err!("Error when creating metadata file"))?;
+
+        serde_json::to_writer(writer, &config)
+            .with_context(|_| format_err!("Error when serializing the parser's metadata"))?;
+
+        let parser_path = folder_name.as_ref().join(config.parser_filename);
+        let mut writer = fs::File::create(&parser_path)
+            .with_context(|_| format_err!("Error when creating the parser file"))?;
+
+        self.serialize(&mut Serializer::new(&mut writer))
+            .with_context(|_| format_err!("Error when serializing the parser"))?;
+        Ok(())
+    }
+
+    /// Load a parser from a folder
+    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser> {
+        let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
+        let metadata_file = fs::File::open(&metadata_path)
+            .with_context(|_| format_err!("Error when opening the metadata file"))?;
+
+        let config: ParserConfig = serde_json::from_reader(metadata_file)
+            .with_context(|_| format_err!("Error when deserializing the metadata"))?;
+
+        let parser_path = folder_name.as_ref().join(config.parser_filename);
+        let reader = fs::File::open(&parser_path)
+            .with_context(|_| format_err!("Error when opening the parser file"))?;
+
+        Ok(from_read(reader)
+            .with_context(|_| format_err!("Error when deserializing the parser"))?)
+    }
+}
+
+impl Parser {
     /// get resolved value
     fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> Result<&(u32, Vec<u32>)> {
         self.resolved_value_to_tokens
@@ -353,6 +412,25 @@ impl Parser {
                 token
             )
         })
+    }
+
+    /// get the underlying matched value associated to a `PossibleMatch`
+    fn get_matched_value(&self, possible_match: &PossibleMatch) -> Result<String> {
+        Ok(self
+            .resolved_value_to_tokens
+            .get(&possible_match.resolved_value)
+            .ok_or_else(|| {
+                format_err!(
+                    "Missing key for resolved value {}",
+                    possible_match.resolved_value
+                )
+            })?
+            .1
+            .iter()
+            .flat_map(|token_idx| self.tokens_symbol_table.find_index(token_idx))
+            .map(|token_string| token_string.as_str())
+            .collect::<Vec<_>>()
+            .join(" "))
     }
 
     /// Find all possible matches in a string.
@@ -604,21 +682,6 @@ impl Parser {
         }
     }
 
-    /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>> {
-        let matches_heap = self
-            .find_possible_matches(input, self.threshold)
-            .with_context(|_| format_err!("Error when finding possible matches"))?;
-        Ok(self
-            .parse_input(input, matches_heap)
-            .with_context(|_| format_err!("Error when filtering possible matches"))?)
-    }
-
-    /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
-    pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = threshold;
-    }
-
     fn reduce_possible_match(
         input: &str,
         possible_match: PossibleMatch,
@@ -712,6 +775,7 @@ impl Parser {
                             possible_match.resolved_value
                         )
                     })?,
+                matched_value: self.get_matched_value(&possible_match)?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -730,45 +794,6 @@ impl Parser {
             stop_words: self.get_stop_words(),
             edge_cases: self.get_edge_cases(),
         }
-    }
-
-    /// Dump the parser to a folder
-    pub fn dump<P: AsRef<Path>>(&self, folder_name: P) -> Result<()> {
-        fs::create_dir(folder_name.as_ref())
-            .with_context(|_| format_err!("Error when creating persisting directory"))?;
-
-        let config = self.get_parser_config();
-
-        let writer = fs::File::create(folder_name.as_ref().join(METADATA_FILENAME))
-            .with_context(|_| format_err!("Error when creating metadata file"))?;
-
-        serde_json::to_writer(writer, &config)
-            .with_context(|_| format_err!("Error when serializing the parser's metadata"))?;
-
-        let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let mut writer = fs::File::create(&parser_path)
-            .with_context(|_| format_err!("Error when creating the parser file"))?;
-
-        self.serialize(&mut Serializer::new(&mut writer))
-            .with_context(|_| format_err!("Error when serializing the parser"))?;
-        Ok(())
-    }
-
-    /// Load a parser from a folder
-    pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser> {
-        let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
-        let metadata_file = fs::File::open(&metadata_path)
-            .with_context(|_| format_err!("Error when opening the metadata file"))?;
-
-        let config: ParserConfig = serde_json::from_reader(metadata_file)
-            .with_context(|_| format_err!("Error when deserializing the metadata"))?;
-
-        let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let reader = fs::File::open(&parser_path)
-            .with_context(|_| format_err!("Error when opening the parser file"))?;
-
-        Ok(from_read(reader)
-            .with_context(|_| format_err!("Error when deserializing the parser"))?)
     }
 }
 
@@ -882,6 +907,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 20..31,
             }]
         );
@@ -896,6 +922,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 20..38,
             }]
         );
@@ -910,6 +937,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones rolling".to_string(),
                 resolved_value: "The Stones Rolling".to_string(),
+                matched_value: "the stones rolling".to_string(),
                 range: 20..38,
             }]
         );
@@ -922,6 +950,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Stones".to_string(),
+                matched_value: "the stones".to_string(),
                 range: 20..30,
             }]
         );
@@ -940,6 +969,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 26..44,
             }]
         );
@@ -953,6 +983,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 30..48,
             }]
         );
@@ -991,11 +1022,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
             ]
@@ -1008,11 +1041,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
                     range: 22..36,
                 },
             ]
@@ -1027,11 +1062,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
                 ParsedValue {
                     raw_value: "blink eight".to_string(),
                     resolved_value: "Blink-182".to_string(),
+                    matched_value: "blink one eight two".to_string(),
                     range: 39..50,
                 },
             ]
@@ -1052,6 +1089,10 @@ mod tests {
             resolved_value: "Blink-182".to_string(),
             raw_value: "blink 182".to_string(),
         });
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            raw_value: "blink".to_string(),
+        });
 
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
@@ -1065,6 +1106,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "blink 182".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                matched_value: "blink 182".to_string(),
                 range: 16..25,
             }]
         );
@@ -1076,17 +1118,19 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "blink".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                matched_value: "blink".to_string(),
                 range: 16..21,
             }]
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to blink one two").unwrap();
+        parsed = parser.run("let's listen to one eight two").unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "blink one two".to_string(),
+                raw_value: "one eight two".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                matched_value: "blink one eight two".to_string(),
                 range: 16..29,
             }]
         );
@@ -1128,6 +1172,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 16..26,
             }]
         );
@@ -1138,6 +1183,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Jacques Brel".to_string(),
+                matched_value: "jacques brel".to_string(),
                 range: 16..20,
             }]
         );
@@ -1149,6 +1195,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                matched_value: "the flying stones".to_string(),
                 range: 16..33,
             }]
         );
@@ -1159,6 +1206,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "daniel brel".to_string(),
                 resolved_value: "Daniel Brel".to_string(),
+                matched_value: "daniel brel".to_string(),
                 range: 16..27,
             }]
         );
@@ -1169,6 +1217,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "jacques".to_string(),
                 resolved_value: "Jacques".to_string(),
+                matched_value: "jacques".to_string(),
                 range: 16..23,
             }]
         );
@@ -1199,6 +1248,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Jacques Brel".to_string(),
+                matched_value: "jacques brel".to_string(),
                 range: 16..20,
             }]
         );
@@ -1222,6 +1272,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Daniel Brel".to_string(),
+                matched_value: "daniel brel".to_string(),
                 range: 16..20,
             }]
         );
@@ -1267,6 +1318,7 @@ mod tests {
                 resolved_value: "Quand est-ce ?".to_string(),
                 range: 4..13,
                 raw_value: "quand est".to_string(),
+                matched_value: "quand est -ce".to_string(),
             }]
         )
     }
@@ -1292,6 +1344,7 @@ mod tests {
                 resolved_value: "The Rolling Stones".to_string(),
                 range: 8..18,
                 raw_value: "the stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
             }]
         );
     }
@@ -1334,10 +1387,12 @@ mod tests {
                     resolved_value: "Les Enfoirés".to_string(),
                     range: 16..19,
                     raw_value: "les".to_string(),
+                    matched_value: "les enfoirés".to_string(),
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
             ]
@@ -1351,16 +1406,19 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     resolved_value: "Les Enfoirés".to_string(),
+                    matched_value: "les enfoirés".to_string(),
                     range: 16..19,
                     raw_value: "les".to_string(),
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
             ]
@@ -1373,6 +1431,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 20..34,
             }]
         );
@@ -1404,6 +1463,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 8..26,
             }]
         );
@@ -1439,6 +1499,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                matched_value: "the flying stones".to_string(),
                 range: 20..33,
             }]
         );
@@ -1450,6 +1511,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 16..26,
             }]
         );
@@ -1464,6 +1526,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                matched_value: "the flying stones".to_string(),
                 range: 20..33,
             }]
         );
@@ -1475,6 +1538,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                matched_value: "the flying stones".to_string(),
                 range: 16..26,
             }]
         );
@@ -1525,6 +1589,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "queens the stone age".to_string(),
                 resolved_value: "Queens Of The Stone Age".to_string(),
+                matched_value: "queens of the stone age".to_string(),
                 range: 16..36,
             }]
         );
@@ -1651,6 +1716,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
                 resolved_value: "The Black and White Album".to_string(),
+                matched_value: "the black and white album".to_string(),
                 range: 19..40,
             }]
         );
@@ -1661,6 +1727,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "one two three four".to_string(),
                 resolved_value: "1 2 3 4".to_string(),
+                matched_value: "one two three four".to_string(),
                 range: 0..18,
             }]
         );
@@ -1673,11 +1740,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
                     resolved_value: "1 2 3 4".to_string(),
+                    matched_value: "one two three four".to_string(),
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "five six".to_string(),
                     resolved_value: "3 4 5 6".to_string(),
+                    matched_value: "three four five six".to_string(),
                     range: 24..32,
                 },
             ]
@@ -1692,11 +1761,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
                     resolved_value: "1 2 3 4".to_string(),
+                    matched_value: "one two three four".to_string(),
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "six seven".to_string(),
                     resolved_value: "6 7".to_string(),
+                    matched_value: "six seven".to_string(),
                     range: 29..38,
                 },
             ]
@@ -1724,6 +1795,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                matched_value: "the rolling stones".to_string(),
                 range: 20..34,
             }]
         );
@@ -1735,6 +1807,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "bowie".to_string(),
                 resolved_value: "David Bowie".to_string(),
+                matched_value: "david bowie".to_string(),
                 range: 16..21,
             }]
         );
@@ -1759,6 +1832,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
                 resolved_value: "The Black and White Album".to_string(),
+                matched_value: "black and white album".to_string(),
                 range: 19..40,
             }]
         );
@@ -1771,6 +1845,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "dark side of the moon".to_string(),
                 resolved_value: "Dark Side of the Moon".to_string(),
+                matched_value: "dark side of the moon".to_string(),
                 range: 16..37,
             }]
         );
@@ -1785,11 +1860,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "je veux".to_string(),
                     resolved_value: "Je veux du bonheur".to_string(),
+                    matched_value: "je veux du bonheur".to_string(),
                     range: 0..7,
                 },
                 ParsedValue {
                     raw_value: "dark side of the moon".to_string(),
                     resolved_value: "Dark Side of the Moon".to_string(),
+                    matched_value: "dark side of the moon".to_string(),
                     range: 16..37,
                 },
             ]
@@ -1833,6 +1910,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch".to_string(),
                 resolved_value: "Hans Knappertsbusch".to_string(),
+                matched_value: "hans knappertsbusch".to_string(),
                 range: 16..35,
             }]
         );
@@ -1848,6 +1926,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch conducts".to_string(),
                 resolved_value: "Hans Knappertsbusch conducts".to_string(),
+                matched_value: "hans knappertsbusch conducts".to_string(),
                 range: 16..44,
             }]
         );
