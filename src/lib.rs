@@ -58,7 +58,7 @@
 //!     vec![ParsedValue {
 //!         raw_value: "the stones".to_string(),
 //!         resolved_value: "The Rolling Stones".to_string(),
-//!         resolved_value_id: Some("id42".to_string()),
+//!         resolved_value_ids: vec!["id42".to_string()],
 //!         matched_value: "the rolling stones".to_string(),
 //!         range: 20..30,
 //!     }]
@@ -71,7 +71,7 @@
 //!     vec![ParsedValue {
 //!         raw_value: "brel".to_string(),
 //!         resolved_value: "Jacques Brel".to_string(),
-//!         resolved_value_id: None,
+//!         resolved_value_ids: vec![],
 //!         matched_value: "jacques brel".to_string(),
 //!         range: 20..24,
 //!     }]
