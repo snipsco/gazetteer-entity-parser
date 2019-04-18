@@ -1,6 +1,7 @@
 use std::result::Result;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_derive::*;
 
 /// Struct representing the value of an entity to be added to the parser
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]

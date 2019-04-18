@@ -1,19 +1,22 @@
-use constants::*;
-use data::EntityValue;
-use errors::*;
-use failure::ResultExt;
-use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
-use rmps::{from_read, Serializer};
-use serde::Serialize;
-use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
-use utils::{check_threshold, whitespace_tokenizer};
+
+use failure::{format_err, ResultExt};
+use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
+use rmp_serde::{from_read, Serializer};
+use serde::Serialize;
+use serde_derive::*;
+use serde_json;
+
+use crate::constants::*;
+use crate::data::EntityValue;
+use crate::errors::*;
+use crate::symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
+use crate::utils::{check_threshold, whitespace_tokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -813,16 +816,19 @@ mod tests {
     extern crate mio_httpc;
     extern crate tempfile;
 
-    use self::mio_httpc::CallBuilder;
-    use self::tempfile::tempdir;
+    use std::time::Instant;
+
+    use failure::ResultExt;
+
+    use crate::data::EntityValue;
+    use crate::data::Gazetteer;
+    use crate::parser_builder::ParserBuilder;
+
     #[allow(unused_imports)]
     use super::*;
-    #[allow(unused_imports)]
-    use data::EntityValue;
-    use data::Gazetteer;
-    use failure::ResultExt;
-    use parser_builder::ParserBuilder;
-    use std::time::Instant;
+
+    use self::mio_httpc::CallBuilder;
+    use self::tempfile::tempdir;
 
     #[test]
     fn test_serialization_deserialization() {

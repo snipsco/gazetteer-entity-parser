@@ -3,6 +3,8 @@
 /// - allows mapping a string to several indices
 use std::collections::BTreeMap;
 
+use serde_derive::*;
+
 #[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct TokenSymbolTable {
     string_to_index: BTreeMap<String, u32>,
