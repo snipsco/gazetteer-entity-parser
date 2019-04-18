@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+### [Unreleased]
+### Added
+- Add `resolved_value_id` property to `EntityValue` and `ParsedValue` structs [#34](https://github.com/snipsco/gazetteer-entity-parser/pull/34)
+
 ## [0.7.0] - 2019-04-16
 ### Added
 - Add API to prepend entity values [#31](https://github.com/snipsco/gazetteer-entity-parser/pull/31)
