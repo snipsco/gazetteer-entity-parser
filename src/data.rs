@@ -6,6 +6,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct EntityValue {
     pub resolved_value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_value_id: Option<String>,
     pub raw_value: String,
 }
 

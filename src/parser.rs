@@ -79,19 +79,18 @@ impl PossibleMatch {
 }
 
 impl Ord for PossibleMatch {
+    #[allow(clippy::if_same_then_else)]
     fn cmp(&self, other: &PossibleMatch) -> Ordering {
         if self.n_consumed_tokens < other.n_consumed_tokens {
             Ordering::Less
         } else if self.n_consumed_tokens > other.n_consumed_tokens {
             Ordering::Greater
+        } else if self.raw_value_length < other.raw_value_length {
+            Ordering::Greater
+        } else if self.raw_value_length > other.raw_value_length {
+            Ordering::Less
         } else {
-            if self.raw_value_length < other.raw_value_length {
-                Ordering::Greater
-            } else if self.raw_value_length > other.raw_value_length {
-                Ordering::Less
-            } else {
-                other.rank.cmp(&self.rank)
-            }
+            other.rank.cmp(&self.rank)
         }
     }
 }
@@ -108,6 +107,7 @@ impl PartialOrd for PossibleMatch {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedValue {
     pub resolved_value: String,
+    pub resolved_value_id: Option<String>,
     // character-level
     pub range: Range<usize>,
     pub raw_value: String,
@@ -146,7 +146,7 @@ impl Parser {
         // we duplicate it to allow several raw values to map to it
         let res_value_idx = self
             .resolved_symbol_table
-            .add_symbol(entity_value.resolved_value);
+            .add_symbol(entity_value.resolved_value, entity_value.resolved_value_id);
 
         for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
             let token_idx = self.tokens_symbol_table.add_symbol(token);
@@ -170,13 +170,10 @@ impl Parser {
     /// Prepend a list of entity values to the parser and update the ranks accordingly
     pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) {
         // update rank of previous values
-        for res_val in self.resolved_symbol_table.get_all_indices() {
-            self.resolved_value_to_tokens
-                .entry(*res_val)
-                .and_modify(|(rank, _)| *rank += entity_values.len() as u32);
-        }
+        self.shift_ranks(entity_values.len() as u32);
+
         for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), rank as u32);
+            self.add_value(entity_value, rank as u32);
         }
 
         // Update the stop words and edge cases
@@ -206,7 +203,7 @@ impl Parser {
         let mut tokens_with_counts = self
             .token_to_resolved_values
             .iter()
-            .map(|(idx, res_values)| (idx.clone(), res_values.len()))
+            .map(|(idx, res_values)| (*idx, res_values.len()))
             .collect::<Vec<_>>();
 
         tokens_with_counts.sort_by_key(|&(_, count)| -(count as i32));
@@ -226,7 +223,7 @@ impl Parser {
                 self.stop_words.insert(tok_idx);
                 self.token_to_resolved_values
                     .entry(tok_idx)
-                    .or_insert_with(|| BTreeSet::new());
+                    .or_insert_with(BTreeSet::new);
             }
         }
 
@@ -243,7 +240,11 @@ impl Parser {
     pub fn get_stop_words(&self) -> HashSet<String> {
         self.stop_words
             .iter()
-            .flat_map(|idx| self.tokens_symbol_table.find_index(idx).cloned())
+            .flat_map(|idx| {
+                self.tokens_symbol_table
+                    .find_index(*idx)
+                    .map(|sym| sym.to_string())
+            })
             .collect()
     }
 
@@ -251,7 +252,11 @@ impl Parser {
     pub fn get_edge_cases(&self) -> HashSet<String> {
         self.edge_cases
             .iter()
-            .flat_map(|idx| self.resolved_symbol_table.find_index(idx).cloned())
+            .flat_map(|idx| {
+                self.resolved_symbol_table
+                    .find_index(*idx)
+                    .map(|resolved_symbol| resolved_symbol.value.to_string())
+            })
             .collect()
     }
 
@@ -286,7 +291,7 @@ impl Parser {
             for val in &self.injected_values {
                 for res_val in self.resolved_symbol_table.remove_symbol(&val) {
                     let (_, tokens) = self
-                        .get_tokens_from_resolved_value(&res_val)
+                        .get_tokens_from_resolved_value(res_val)
                         .with_context(|_| {
                             format_err!("Error when retrieving tokens of resolved value '{}'", val)
                         })?
@@ -315,26 +320,22 @@ impl Parser {
                 }
             }
             for tok_idx in tokens_marked_for_removal {
-                self.tokens_symbol_table.remove_index(&tok_idx);
+                self.tokens_symbol_table.remove_index(tok_idx);
                 self.token_to_resolved_values.remove(&tok_idx);
             }
         }
 
         if prepend {
             // update rank of previous values
-            let n_new_values = new_values.len() as u32;
-            for res_val in self.resolved_symbol_table.get_all_indices() {
-                self.resolved_value_to_tokens
-                    .entry(*res_val)
-                    .and_modify(|(rank, _)| *rank += n_new_values);
-            }
+            self.shift_ranks(new_values.len() as u32);
         }
 
-        let new_start_rank = match prepend {
+        let new_start_rank = if prepend {
             // we inject new values from rank 0 to n_new_values - 1
-            true => 0,
+            0
+        } else {
             // we inject new values from the current last rank onwards
-            false => self.resolved_value_to_tokens.len(),
+            self.resolved_value_to_tokens.len()
         } as u32;
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
@@ -393,9 +394,9 @@ impl Parser {
 
 impl Parser {
     /// get resolved value
-    fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> Result<&(u32, Vec<u32>)> {
+    fn get_tokens_from_resolved_value(&self, resolved_value: u32) -> Result<&(u32, Vec<u32>)> {
         self.resolved_value_to_tokens
-            .get(resolved_value)
+            .get(&resolved_value)
             .ok_or_else(|| {
                 format_err!(
                     "Cannot find resolved value index {} in `resolved_value_to_tokens`",
@@ -405,13 +406,20 @@ impl Parser {
     }
 
     /// get resolved values from token
-    fn get_resolved_values_from_token(&self, token: &u32) -> Result<&BTreeSet<u32>> {
-        self.token_to_resolved_values.get(token).ok_or_else(|| {
+    fn get_resolved_values_from_token(&self, token: u32) -> Result<&BTreeSet<u32>> {
+        self.token_to_resolved_values.get(&token).ok_or_else(|| {
             format_err!(
                 "Cannot find token index {} in `token_to_resolved_values`",
                 token
             )
         })
+    }
+
+    /// Shift the ranks of all the resolved values
+    fn shift_ranks(&mut self, shift: u32) {
+        for (rank, _) in self.resolved_value_to_tokens.values_mut() {
+            *rank += shift
+        }
     }
 
     /// get the underlying matched value associated to a `PossibleMatch`
@@ -427,8 +435,8 @@ impl Parser {
             })?
             .1
             .iter()
-            .flat_map(|token_idx| self.tokens_symbol_table.find_index(token_idx))
-            .map(|token_string| token_string.as_str())
+            .flat_map(|token_idx| self.tokens_symbol_table.find_index(*token_idx))
+            .map(|token_string| token_string)
             .collect::<Vec<_>>()
             .join(" "))
     }
@@ -448,7 +456,7 @@ impl Parser {
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
         for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
             if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
-                let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
+                let res_vals_from_token = self.get_resolved_values_from_token(*value)?;
                 if res_vals_from_token.is_empty() {
                     continue;
                 }
@@ -522,6 +530,7 @@ impl Parser {
             }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_or_insert_possible_match(
         &self,
         value: u32,
@@ -545,17 +554,16 @@ impl Parser {
                 )?;
             }
             Entry::Vacant(entry) => {
-                self.insert_new_possible_match(
+                if let Some(new_possible_match) = self.insert_new_possible_match(
                     res_val,
                     value,
                     range,
                     token_idx,
                     threshold,
                     &skipped_tokens,
-                )?
-                .map(|new_possible_match| {
+                )? {
                     entry.insert(new_possible_match);
-                });
+                }
             }
         }
         Ok(())
@@ -568,18 +576,20 @@ impl Parser {
         value: u32,
         range: Range<usize>,
         threshold: f32,
-        ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
+        matches_heap: &mut BinaryHeap<PossibleMatch>,
     ) -> Result<()> {
-        let (rank, otokens) =
-            self.get_tokens_from_resolved_value(&possible_match.resolved_value)?;
+        let (rank, otokens) = self.get_tokens_from_resolved_value(possible_match.resolved_value)?;
 
         if token_idx == possible_match.last_token_in_input + 1 {
             // Grow the last Possible Match
             // Find the next token in the resolved value that matches the
             // input token
-            for otoken_idx in (possible_match.last_token_in_resolution + 1)..otokens.len() {
-                let otok = otokens[otoken_idx];
-                if value == otok {
+            for (otoken_idx, otok) in otokens
+                .iter()
+                .enumerate()
+                .skip(possible_match.last_token_in_resolution + 1)
+            {
+                if value == *otok {
                     possible_match.range.end = range.end;
                     possible_match.n_consumed_tokens += 1;
                     possible_match.last_token_in_input = token_idx;
@@ -628,7 +638,7 @@ impl Parser {
         threshold: f32,
         skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
     ) -> Result<Option<PossibleMatch>> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val)?;
+        let (rank, otokens) = self.get_tokens_from_resolved_value(res_val)?;
         let last_token_in_resolution =
             otokens.iter().position(|e| *e == value).ok_or_else(|| {
                 format_err!("Missing token {} from list {:?}", value, otokens.clone())
@@ -736,7 +746,7 @@ impl Parser {
                     possible_match.tokens_range.start <= **idx
                         && possible_match.tokens_range.end > **idx
                 })
-                .map(|idx| *idx)
+                .cloned()
                 .collect();
 
             if !overlapping_tokens.is_empty() {
@@ -757,6 +767,15 @@ impl Parser {
                 }
                 continue;
             }
+            let resolved_symbol = self
+                .resolved_symbol_table
+                .find_index(possible_match.resolved_value)
+                .ok_or_else(|| {
+                    format_err!(
+                        "Missing key for resolved value {}",
+                        possible_match.resolved_value
+                    )
+                })?;
 
             parsing.push(ParsedValue {
                 range: possible_match.range.clone(),
@@ -765,16 +784,8 @@ impl Parser {
                     .skip(possible_match.range.start)
                     .take(possible_match.range.len())
                     .collect(),
-                resolved_value: self
-                    .resolved_symbol_table
-                    .find_index(&possible_match.resolved_value)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format_err!(
-                            "Missing key for resolved value {}",
-                            possible_match.resolved_value
-                        )
-                    })?,
+                resolved_value: resolved_symbol.value.to_string(),
+                resolved_value_id: resolved_symbol.identifier.map(|id| id.to_string()),
                 matched_value: self.get_matched_value(&possible_match)?,
             });
             for idx in tokens_range_start..tokens_range_end {
@@ -820,14 +831,17 @@ mod tests {
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
+            resolved_value_id: None,
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
+            resolved_value_id: None,
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
+            resolved_value_id: None,
         });
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -867,19 +881,23 @@ mod tests {
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
             raw_value: "the flying stones".to_string(),
+            resolved_value_id: None,
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the rolling stones".to_string(),
+            resolved_value_id: None,
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Stones Rolling".to_string(),
             raw_value: "the stones rolling".to_string(),
+            resolved_value_id: None,
         });
 
         gazetteer.add(EntityValue {
             resolved_value: "The Stones".to_string(),
             raw_value: "the stones".to_string(),
+            resolved_value_id: None,
         });
 
         let mut parser = ParserBuilder::default()
@@ -907,6 +925,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 20..31,
             }]
@@ -922,6 +941,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 20..38,
             }]
@@ -937,6 +957,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones rolling".to_string(),
                 resolved_value: "The Stones Rolling".to_string(),
+                resolved_value_id: None,
                 matched_value: "the stones rolling".to_string(),
                 range: 20..38,
             }]
@@ -950,6 +971,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the stones".to_string(),
                 range: 20..30,
             }]
@@ -969,6 +991,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 26..44,
             }]
@@ -983,6 +1006,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 30..48,
             }]
@@ -994,18 +1018,22 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
+            resolved_value_id: None,
             raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Je Suis Animal".to_string(),
+            resolved_value_id: None,
             raw_value: "je suis animal".to_string(),
         });
 
@@ -1022,12 +1050,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    resolved_value_id: None,
                     matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    resolved_value_id: None,
                     matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
@@ -1041,12 +1071,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    resolved_value_id: None,
                     matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    resolved_value_id: None,
                     matched_value: "the rolling stones".to_string(),
                     range: 22..36,
                 },
@@ -1062,12 +1094,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    resolved_value_id: None,
                     matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
                 ParsedValue {
                     raw_value: "blink eight".to_string(),
                     resolved_value: "Blink-182".to_string(),
+                    resolved_value_id: None,
                     matched_value: "blink one eight two".to_string(),
                     range: 39..50,
                 },
@@ -1083,14 +1117,17 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
+            resolved_value_id: None,
             raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
+            resolved_value_id: None,
             raw_value: "blink 182".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
+            resolved_value_id: None,
             raw_value: "blink".to_string(),
         });
 
@@ -1106,6 +1143,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "blink 182".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                resolved_value_id: None,
                 matched_value: "blink 182".to_string(),
                 range: 16..25,
             }]
@@ -1118,6 +1156,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "blink".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                resolved_value_id: None,
                 matched_value: "blink".to_string(),
                 range: 16..21,
             }]
@@ -1130,6 +1169,71 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "one eight two".to_string(),
                 resolved_value: "Blink-182".to_string(),
+                resolved_value_id: None,
+                matched_value: "blink one eight two".to_string(),
+                range: 16..29,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parser_with_resolved_value_ids() {
+        let mut gazetteer = Gazetteer::default();
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            resolved_value_id: Some("42".to_string()),
+            raw_value: "blink one eight two".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            resolved_value_id: Some("43".to_string()),
+            raw_value: "blink 182".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Blink-182".to_string(),
+            resolved_value_id: Some("44".to_string()),
+            raw_value: "blink".to_string(),
+        });
+
+        let mut parser = ParserBuilder::default()
+            .minimum_tokens_ratio(0.0)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
+
+        let mut parsed = parser.run("let's listen to blink 182").unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "blink 182".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                resolved_value_id: Some("43".to_string()),
+                matched_value: "blink 182".to_string(),
+                range: 16..25,
+            }]
+        );
+
+        parser.set_threshold(1.0);
+        parsed = parser.run("let's listen to blink").unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "blink".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                resolved_value_id: Some("44".to_string()),
+                matched_value: "blink".to_string(),
+                range: 16..21,
+            }]
+        );
+
+        parser.set_threshold(3.0 / 4.0);
+        parsed = parser.run("let's listen to one eight two").unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                raw_value: "one eight two".to_string(),
+                resolved_value: "Blink-182".to_string(),
+                resolved_value_id: Some("42".to_string()),
                 matched_value: "blink one eight two".to_string(),
                 range: 16..29,
             }]
@@ -1141,22 +1245,27 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Jacques Brel".to_string(),
+            resolved_value_id: None,
             raw_value: "jacques brel".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Daniel Brel".to_string(),
+            resolved_value_id: None,
             raw_value: "daniel brel".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Jacques".to_string(),
+            resolved_value_id: None,
             raw_value: "jacques".to_string(),
         });
         let parser = ParserBuilder::default()
@@ -1172,6 +1281,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 16..26,
             }]
@@ -1183,6 +1293,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Jacques Brel".to_string(),
+                resolved_value_id: None,
                 matched_value: "jacques brel".to_string(),
                 range: 16..20,
             }]
@@ -1195,6 +1306,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the flying stones".to_string(),
                 range: 16..33,
             }]
@@ -1206,6 +1318,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "daniel brel".to_string(),
                 resolved_value: "Daniel Brel".to_string(),
+                resolved_value_id: None,
                 matched_value: "daniel brel".to_string(),
                 range: 16..27,
             }]
@@ -1217,6 +1330,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "jacques".to_string(),
                 resolved_value: "Jacques".to_string(),
+                resolved_value_id: None,
                 matched_value: "jacques".to_string(),
                 range: 16..23,
             }]
@@ -1228,10 +1342,12 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Jacques Brel".to_string(),
+            resolved_value_id: None,
             raw_value: "jacques brel".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
         let mut parser = ParserBuilder::default()
@@ -1248,6 +1364,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Jacques Brel".to_string(),
+                resolved_value_id: None,
                 matched_value: "jacques brel".to_string(),
                 range: 16..20,
             }]
@@ -1256,10 +1373,12 @@ mod tests {
         let values_to_prepend = vec![
             EntityValue {
                 resolved_value: "Daniel Brel".to_string(),
+                resolved_value_id: None,
                 raw_value: "daniel brel".to_string(),
             },
             EntityValue {
                 resolved_value: "Eric Brel".to_string(),
+                resolved_value_id: None,
                 raw_value: "eric brel".to_string(),
             },
         ];
@@ -1272,6 +1391,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
                 resolved_value: "Daniel Brel".to_string(),
+                resolved_value_id: None,
                 matched_value: "daniel brel".to_string(),
                 range: 16..20,
             }]
@@ -1283,6 +1403,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
 
@@ -1303,6 +1424,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Quand est-ce ?".to_string(),
+            resolved_value_id: None,
             raw_value: "quand est -ce".to_string(),
         });
         let parser = ParserBuilder::default()
@@ -1316,6 +1438,7 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 resolved_value: "Quand est-ce ?".to_string(),
+                resolved_value_id: None,
                 range: 4..13,
                 raw_value: "quand est".to_string(),
                 matched_value: "quand est -ce".to_string(),
@@ -1328,6 +1451,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
 
@@ -1342,6 +1466,7 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 range: 8..18,
                 raw_value: "the stones".to_string(),
                 matched_value: "the rolling stones".to_string(),
@@ -1354,22 +1479,27 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Flying Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the flying stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Blink-182".to_string(),
+            resolved_value_id: None,
             raw_value: "blink one eight two".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Je Suis Animal".to_string(),
+            resolved_value_id: None,
             raw_value: "je suis animal".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Les Enfoirés".to_string(),
+            resolved_value_id: None,
             raw_value: "les enfoirés".to_string(),
         });
 
@@ -1385,6 +1515,7 @@ mod tests {
             vec![
                 ParsedValue {
                     resolved_value: "Les Enfoirés".to_string(),
+                    resolved_value_id: None,
                     range: 16..19,
                     raw_value: "les".to_string(),
                     matched_value: "les enfoirés".to_string(),
@@ -1392,6 +1523,7 @@ mod tests {
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    resolved_value_id: None,
                     matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
@@ -1406,11 +1538,13 @@ mod tests {
                 ParsedValue {
                     raw_value: "je".to_string(),
                     resolved_value: "Je Suis Animal".to_string(),
+                    resolved_value_id: None,
                     matched_value: "je suis animal".to_string(),
                     range: 0..2,
                 },
                 ParsedValue {
                     resolved_value: "Les Enfoirés".to_string(),
+                    resolved_value_id: None,
                     matched_value: "les enfoirés".to_string(),
                     range: 16..19,
                     raw_value: "les".to_string(),
@@ -1418,6 +1552,7 @@ mod tests {
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
                     resolved_value: "The Rolling Stones".to_string(),
+                    resolved_value_id: None,
                     matched_value: "the rolling stones".to_string(),
                     range: 20..34,
                 },
@@ -1431,6 +1566,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 20..34,
             }]
@@ -1442,6 +1578,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
 
@@ -1463,6 +1600,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 8..26,
             }]
@@ -1474,6 +1612,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
 
@@ -1485,6 +1624,7 @@ mod tests {
 
         let new_values = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the flying stones".to_string(),
         }];
 
@@ -1499,6 +1639,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the flying stones".to_string(),
                 range: 20..33,
             }]
@@ -1511,6 +1652,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 16..26,
             }]
@@ -1526,6 +1668,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the flying stones".to_string(),
                 range: 20..33,
             }]
@@ -1538,6 +1681,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the flying stones".to_string(),
                 range: 16..26,
             }]
@@ -1549,6 +1693,7 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
 
@@ -1560,6 +1705,7 @@ mod tests {
 
         let new_values_1 = vec![EntityValue {
             resolved_value: "The Flying Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the flying stones".to_string(),
         }];
 
@@ -1568,6 +1714,7 @@ mod tests {
         // Test injection from vanilla
         let new_values_2 = vec![EntityValue {
             resolved_value: "Queens Of The Stone Age".to_string(),
+            resolved_value_id: None,
             raw_value: "queens of the stone age".to_string(),
         }];
 
@@ -1589,6 +1736,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "queens the stone age".to_string(),
                 resolved_value: "Queens Of The Stone Age".to_string(),
+                resolved_value_id: None,
                 matched_value: "queens of the stone age".to_string(),
                 range: 16..36,
             }]
@@ -1600,11 +1748,7 @@ mod tests {
             .is_empty());
         assert!(parser.tokens_symbol_table.find_symbol("flying").is_none());
         assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
-        assert!(!parser
-            .token_to_resolved_values
-            .get(&stones_idx)
-            .unwrap()
-            .contains(&flying_stones_idx));
+        assert!(!parser.token_to_resolved_values[&stones_idx].contains(&flying_stones_idx));
         assert!(!parser
             .resolved_value_to_tokens
             .contains_key(&flying_stones_idx));
@@ -1615,10 +1759,12 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "The Rolling Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the rolling stones".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Stones".to_string(),
+            resolved_value_id: None,
             raw_value: "the stones".to_string(),
         });
 
@@ -1650,10 +1796,12 @@ mod tests {
         let new_values = vec![
             EntityValue {
                 resolved_value: "Rolling".to_string(),
+                resolved_value_id: None,
                 raw_value: "rolling".to_string(),
             },
             EntityValue {
                 resolved_value: "Rolling Two".to_string(),
+                resolved_value_id: None,
                 raw_value: "rolling two".to_string(),
             },
         ];
@@ -1679,26 +1827,32 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "Black And White".to_string(),
+            resolved_value_id: None,
             raw_value: "black and white".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "Album".to_string(),
+            resolved_value_id: None,
             raw_value: "album".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "The Black and White Album".to_string(),
+            resolved_value_id: None,
             raw_value: "the black and white album".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "1 2 3 4".to_string(),
+            resolved_value_id: None,
             raw_value: "one two three four".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "3 4 5 6".to_string(),
+            resolved_value_id: None,
             raw_value: "three four five six".to_string(),
         });
         gazetteer.add(EntityValue {
             resolved_value: "6 7".to_string(),
+            resolved_value_id: None,
             raw_value: "six seven".to_string(),
         });
 
@@ -1716,6 +1870,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
                 resolved_value: "The Black and White Album".to_string(),
+                resolved_value_id: None,
                 matched_value: "the black and white album".to_string(),
                 range: 19..40,
             }]
@@ -1727,6 +1882,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "one two three four".to_string(),
                 resolved_value: "1 2 3 4".to_string(),
+                resolved_value_id: None,
                 matched_value: "one two three four".to_string(),
                 range: 0..18,
             }]
@@ -1740,12 +1896,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
                     resolved_value: "1 2 3 4".to_string(),
+                    resolved_value_id: None,
                     matched_value: "one two three four".to_string(),
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "five six".to_string(),
                     resolved_value: "3 4 5 6".to_string(),
+                    resolved_value_id: None,
                     matched_value: "three four five six".to_string(),
                     range: 24..32,
                 },
@@ -1761,12 +1919,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
                     resolved_value: "1 2 3 4".to_string(),
+                    resolved_value_id: None,
                     matched_value: "one two three four".to_string(),
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "six seven".to_string(),
                     resolved_value: "6 7".to_string(),
+                    resolved_value_id: None,
                     matched_value: "six seven".to_string(),
                     range: 29..38,
                 },
@@ -1777,7 +1937,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_world_gazetteer_parser() {
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20_000_000).timeout_ms(60_000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer { data };
 
@@ -1795,6 +1955,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 matched_value: "the rolling stones".to_string(),
                 range: 20..34,
             }]
@@ -1807,12 +1968,13 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "bowie".to_string(),
                 resolved_value: "David Bowie".to_string(),
+                resolved_value_id: None,
                 matched_value: "david bowie".to_string(),
                 range: 16..21,
             }]
         );
 
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20_000_000).timeout_ms(60_000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let gaz = Gazetteer { data };
 
@@ -1832,6 +1994,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
                 resolved_value: "The Black and White Album".to_string(),
+                resolved_value_id: None,
                 matched_value: "black and white album".to_string(),
                 range: 19..40,
             }]
@@ -1845,6 +2008,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "dark side of the moon".to_string(),
                 resolved_value: "Dark Side of the Moon".to_string(),
+                resolved_value_id: None,
                 matched_value: "dark side of the moon".to_string(),
                 range: 16..37,
             }]
@@ -1860,12 +2024,14 @@ mod tests {
                 ParsedValue {
                     raw_value: "je veux".to_string(),
                     resolved_value: "Je veux du bonheur".to_string(),
+                    resolved_value_id: None,
                     matched_value: "je veux du bonheur".to_string(),
                     range: 0..7,
                 },
                 ParsedValue {
                     raw_value: "dark side of the moon".to_string(),
                     resolved_value: "Dark Side of the Moon".to_string(),
+                    resolved_value_id: None,
                     matched_value: "dark side of the moon".to_string(),
                     range: 16..37,
                 },
@@ -1877,7 +2043,7 @@ mod tests {
     #[ignore]
     fn test_real_word_injection() {
         // Real-world artist gazetteer
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20_000_000).timeout_ms(100_000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
         let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         let album_gaz = Gazetteer { data };
 
@@ -1896,7 +2062,7 @@ mod tests {
             .unwrap();
 
         // Get 10k values from the album gazetter to inject in the album parser
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
+        let (_, body) = CallBuilder::get().max_response(20_000_000).timeout_ms(100_000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
         let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
         new_values.truncate(10000);
 
@@ -1910,6 +2076,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch".to_string(),
                 resolved_value: "Hans Knappertsbusch".to_string(),
+                resolved_value_id: None,
                 matched_value: "hans knappertsbusch".to_string(),
                 range: 16..35,
             }]
@@ -1926,6 +2093,7 @@ mod tests {
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch conducts".to_string(),
                 resolved_value: "Hans Knappertsbusch conducts".to_string(),
+                resolved_value_id: None,
                 matched_value: "hans knappertsbusch conducts".to_string(),
                 range: 16..44,
             }]

@@ -100,14 +100,17 @@ mod tests {
         let entity_values = vec![
             EntityValue {
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the flying stones".to_string(),
             },
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the rolling stones".to_string(),
             },
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the stones".to_string(),
             }
         ];
@@ -140,6 +143,7 @@ mod tests {
         let entity_values_1 = vec![
             EntityValue {
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the flying stones".to_string(),
             }
         ];
@@ -147,10 +151,12 @@ mod tests {
         let entity_values_2 = vec![
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the rolling stones".to_string(),
             },
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the stones".to_string(),
             }
         ];
@@ -188,14 +194,17 @@ mod tests {
         let entity_values = vec![
             EntityValue {
                 resolved_value: "The Flying Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the flying stones".to_string(),
             },
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the rolling stones".to_string(),
             },
             EntityValue {
                 resolved_value: "The Rolling Stones".to_string(),
+                resolved_value_id: None,
                 raw_value: "the stones".to_string(),
             }
         ];
@@ -230,6 +239,11 @@ mod tests {
     {
       "resolved_value": "yala",
       "raw_value": "yolo"
+    },
+    {
+      "resolved_value": "Value With Id",
+      "resolved_value_id": "42",
+      "raw_value": "value with id"
     }
   ],
   "threshold": 0.6,
@@ -242,7 +256,13 @@ mod tests {
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "yala".to_string(),
+            resolved_value_id: None,
             raw_value: "yolo".to_string(),
+        });
+        gazetteer.add(EntityValue {
+            resolved_value: "Value With Id".to_string(),
+            resolved_value_id: Some("42".to_string()),
+            raw_value: "value with id".to_string(),
         });
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)

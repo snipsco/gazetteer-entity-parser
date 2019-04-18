@@ -1,7 +1,6 @@
 /// Implementation of a symbol table that
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
-
 use std::collections::BTreeMap;
 
 #[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -16,7 +15,7 @@ impl TokenSymbolTable {
     pub fn add_symbol(&mut self, symbol: String) -> u32 {
         self.string_to_index
             .get(&symbol)
-            .map(|idx| *idx)
+            .cloned()
             .unwrap_or_else(|| {
                 let symbol_index = self.available_index;
                 self.available_index += 1;
@@ -31,43 +30,64 @@ impl TokenSymbolTable {
     }
 
     /// Find the unique symbol corresponding to an index in the symbol table
-    pub fn find_index(&self, idx: &u32) -> Option<&String> {
+    pub fn find_index(&self, idx: u32) -> Option<&str> {
         self.string_to_index
             .iter()
-            .find(|(_, sym_idx)| *sym_idx == idx)
-            .map(|(symbol, _)| symbol)
+            .find(|(_, sym_idx)| **sym_idx == idx)
+            .map(|(symbol, _)| &**symbol)
     }
 
     /// Remove the unique symbol corresponding to an index in the symbol table
-    pub fn remove_index(&mut self, idx: &u32) -> Option<String> {
-        let symbol = self.find_index(idx).cloned();
-        symbol.and_then(|symbol|
-            self.string_to_index
-                .remove(&symbol)
-                .map(|_| symbol))
+    pub fn remove_index(&mut self, idx: u32) -> Option<String> {
+        self.find_index(idx)
+            .map(|sym| sym.to_string())
+            .and_then(|symbol| {
+                self.string_to_index
+                    .remove(symbol.as_str())
+                    .map(|_| symbol.to_string())
+            })
     }
 }
 
 #[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct ResolvedSymbolTable {
     index_to_resolved: BTreeMap<u32, String>,
+    index_to_resolved_id: BTreeMap<u32, String>,
     available_index: u32,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ResolvedSymbol<'a> {
+    /// Resolved value
+    pub value: &'a str,
+    /// Identifier optionally associated to the resolved value
+    pub identifier: Option<&'a str>,
+}
+
 impl ResolvedSymbolTable {
-    /// Add a symbol to the symbol table. If the symbol already exists, this will
-    /// generate a new index to allow the symbol to be duplicated in the symbol table
+    /// Add a symbol to the symbol table, along with its optional identifier. If the symbol already
+    /// exists, this will generate a new index to allow the symbol to be duplicated in the symbol
+    /// table
     /// Returns the newly generated corresponding index
-    pub fn add_symbol(&mut self, symbol: String) -> u32 {
+    pub fn add_symbol(&mut self, symbol: String, symbol_id: Option<String>) -> u32 {
         let available_index = self.available_index;
         self.index_to_resolved.insert(available_index, symbol);
+        if let Some(id) = symbol_id {
+            self.index_to_resolved_id.insert(available_index, id);
+        }
         self.available_index += 1;
         available_index
     }
 
     /// Find a symbol from its index
-    pub fn find_index(&self, index: &u32) -> Option<&String> {
-        self.index_to_resolved.get(index)
+    pub fn find_index(&self, index: u32) -> Option<ResolvedSymbol> {
+        self.index_to_resolved.get(&index).map(|symbol| {
+            let symbol_id = self.index_to_resolved_id.get(&index);
+            ResolvedSymbol {
+                value: &**symbol,
+                identifier: symbol_id.map(|id| &**id),
+            }
+        })
     }
 
     /// Find all the indices corresponding to a single symbol
@@ -82,16 +102,96 @@ impl ResolvedSymbolTable {
     /// Remove a symbol and all its linked indices from the symbol table
     pub fn remove_symbol(&mut self, symbol: &str) -> Vec<u32> {
         let indices = self.find_symbol(symbol);
-        indices.into_iter()
-            .flat_map(|idx|
-                self.index_to_resolved
-                    .remove(&idx)
-                    .map(|_| idx))
+        indices
+            .into_iter()
+            .flat_map(|idx| {
+                self.index_to_resolved_id.remove(&idx);
+                self.index_to_resolved.remove(&idx).map(|_| idx)
+            })
             .collect()
     }
+}
 
-    /// Get a vec of all the integer values used to represent the symbols in the symbol table
-    pub fn get_all_indices(&self) -> Vec<&u32> {
-        self.index_to_resolved.keys().collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_in_token_symbol_table() {
+        // Given
+        let mut symtable = TokenSymbolTable::default();
+
+        // When
+        let symbol = "hello";
+        let index = symtable.add_symbol(symbol.to_string());
+
+        // Then
+        assert_eq!(Some(&index), symtable.find_symbol(symbol));
+        assert_eq!(Some(symbol), symtable.find_index(index));
+    }
+
+    #[test]
+    fn test_remove_in_token_symbol_table() {
+        // Given
+        let mut symtable = TokenSymbolTable::default();
+        let index_hello = symtable.add_symbol("hello".to_string());
+        symtable.add_symbol("world".to_string());
+
+        // When
+        let removed_hello = symtable.remove_index(index_hello);
+        let hello_sym = symtable.find_index(index_hello);
+        let hello_idx = symtable.find_symbol("hello");
+
+        // Then
+        assert_eq!(Some("hello".to_string()), removed_hello);
+        assert_eq!(None, hello_sym);
+        assert_eq!(None, hello_idx);
+    }
+
+    #[test]
+    fn test_add_in_resolved_symbol_table() {
+        // Given
+        let mut symtable = ResolvedSymbolTable::default();
+
+        // When
+        let symbol = "hello";
+        let index_1 = symtable.add_symbol(symbol.to_string(), Some("id_42".to_string()));
+        let index_2 = symtable.add_symbol(symbol.to_string(), Some("id_43".to_string()));
+
+        // Then
+        assert_eq!(vec![index_1, index_2], symtable.find_symbol(symbol));
+        assert_eq!(
+            Some(ResolvedSymbol {
+                value: "hello",
+                identifier: Some("id_42")
+            }),
+            symtable.find_index(index_1)
+        );
+        assert_eq!(
+            Some(ResolvedSymbol {
+                value: "hello",
+                identifier: Some("id_43")
+            }),
+            symtable.find_index(index_2)
+        );
+    }
+
+    #[test]
+    fn test_remove_in_resolved_symbol_table() {
+        // Given
+        let mut symtable = ResolvedSymbolTable::default();
+        let index_hello_1 = symtable.add_symbol("hello".to_string(), Some("42".to_string()));
+        let index_hello_2 = symtable.add_symbol("hello".to_string(), Some("43".to_string()));
+        symtable.add_symbol("world".to_string(), None);
+
+        // When
+        let removed_hello_indices = symtable.remove_symbol("hello");
+        let hello_sym = symtable.find_index(index_hello_1);
+        let hello_indices = symtable.find_symbol("hello");
+
+        // Then
+        assert_eq!(vec![index_hello_1, index_hello_2], removed_hello_indices);
+        assert_eq!(None, hello_sym);
+        assert_eq!(Vec::<u32>::new(), hello_indices);
     }
 }
