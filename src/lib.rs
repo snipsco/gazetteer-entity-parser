@@ -17,22 +17,27 @@
 //! // We fill the gazetteer with artists, sorted by popularity
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "The Rolling Stones".to_string(),
+//!     resolved_value_id: Some("id42".to_string()),
 //!     raw_value: "the rolling stones".to_string(),
 //! });
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "The Strokes".to_string(),
+//!     resolved_value_id: None,
 //!     raw_value: "the strokes".to_string(),
 //! });
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "The Hives".to_string(),
+//!     resolved_value_id: None,
 //!     raw_value: "the hives".to_string(),
 //! });
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "Jacques Brel".to_string(),
+//!     resolved_value_id: None,
 //!     raw_value: "jacques brel".to_string(),
 //! });
 //! gazetteer.add(EntityValue {
 //!     resolved_value: "Daniel Brel".to_string(),
+//!     resolved_value_id: None,
 //!     raw_value: "daniel brel".to_string(),
 //! });
 //!
@@ -53,6 +58,7 @@
 //!     vec![ParsedValue {
 //!         raw_value: "the stones".to_string(),
 //!         resolved_value: "The Rolling Stones".to_string(),
+//!         resolved_value_id: Some("id42".to_string()),
 //!         matched_value: "the rolling stones".to_string(),
 //!         range: 20..30,
 //!     }]
@@ -65,21 +71,14 @@
 //!     vec![ParsedValue {
 //!         raw_value: "brel".to_string(),
 //!         resolved_value: "Jacques Brel".to_string(),
+//!         resolved_value_id: None,
 //!         matched_value: "jacques brel".to_string(),
 //!         range: 20..24,
 //!     }]
 //! );
 //!```
 
-#[macro_use]
-extern crate failure;
-extern crate fnv;
-extern crate rmp_serde as rmps;
-extern crate serde;
-extern crate serde_json;
-
-#[macro_use]
-extern crate serde_derive;
+#![allow(clippy::range_plus_one, clippy::float_cmp)]
 
 mod constants;
 mod data;

@@ -81,6 +81,7 @@ fn generate_random_gazetteer(
         .take(nb_entity_values)
         .map(|string| EntityValue {
             resolved_value: string.to_lowercase(),
+            resolved_value_id: None,
             raw_value: string,
         })
         .collect();
@@ -106,11 +107,11 @@ fn generate_random_parser(
 }
 
 fn get_low_redundancy_parser() -> (Parser, RandomStringGenerator) {
-    generate_random_parser(10000, 100000, 10, 0.5, 50)
+    generate_random_parser(10_000, 100_000, 10, 0.5, 50)
 }
 
 fn get_high_redundancy_parser() -> (Parser, RandomStringGenerator) {
-    generate_random_parser(100, 100000, 5, 0.5, 50)
+    generate_random_parser(100, 100_000, 5, 0.5, 50)
 }
 
 fn parsing_low_redundancy(c: &mut Criterion) {

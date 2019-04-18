@@ -2,6 +2,7 @@
 name = "gazetteer-entity-parser"
 version = "0.7.0"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
+edition = "2018"
 
 [profile.bench]
 debug = true
