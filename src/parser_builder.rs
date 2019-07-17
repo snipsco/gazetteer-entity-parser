@@ -260,8 +260,8 @@ mod tests {
     "world"
   ],
   "license_info": {
-     "filename": "LICENSE",
-     "content": "Some content here"
+    "filename": "LICENSE",
+    "content": "Some content here"
   }
 }"#;
         let mut gazetteer = Gazetteer::default();
@@ -287,24 +287,6 @@ mod tests {
 
         // Serialize builder to string and assert
         let serialized_builder = serde_json::to_string_pretty(&builder).unwrap();
-        let expected_builder_str = r#"{
-  "gazetteer": [
-    {
-      "resolved_value": "yala",
-      "raw_value": "yolo"
-    }
-  ],
-  "threshold": 0.6,
-  "n_gazetteer_stop_words": 30,
-  "additional_stop_words": [
-    "hello",
-    "world"
-  ],
-  "license_info": {
-    "filename": "LICENSE",
-    "content": "Some content here"
-  }
-}"#;
-        assert_eq!(serialized_builder, expected_builder_str);
+        assert_eq!(serialized_builder, serialized_builder_str);
     }
 }
