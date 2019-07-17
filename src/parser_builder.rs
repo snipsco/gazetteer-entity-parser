@@ -302,7 +302,7 @@ mod tests {
   ],
   "license_info": {
     "filename": "LICENSE",
-    "content": " Some content here"
+    "content": "Some content here"
   }
 }"#;
         assert_eq!(serialized_builder, expected_builder_str);
