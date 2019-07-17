@@ -43,6 +43,22 @@ pub struct Parser {
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
     threshold: f32,
+    // License information associated to the parser's data
+    #[serde(default)]
+    license_info: Option<LicenseInfo>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub struct LicenseInfo {
+    filename: String,
+    #[serde(skip)]
+    content: String,
+}
+
+impl LicenseInfo {
+    pub fn new(filename: String, content: String) -> Self {
+        Self { filename, content }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +68,7 @@ struct ParserConfig {
     threshold: f32,
     stop_words: HashSet<String>,
     edge_cases: HashSet<String>,
+    license_info: Option<LicenseInfo>,
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -239,6 +256,11 @@ impl Parser {
             .collect();
     }
 
+    /// Set the license info
+    pub fn set_license_info(&mut self, license_info: Option<LicenseInfo>) {
+        self.license_info = license_info;
+    }
+
     /// Get the set of stop words
     pub fn get_stop_words(&self) -> HashSet<String> {
         self.stop_words
@@ -370,6 +392,13 @@ impl Parser {
 
         self.serialize(&mut Serializer::new(&mut writer))
             .with_context(|_| format_err!("Error when serializing the parser"))?;
+
+        if let Some(license_info) = &self.license_info {
+            let license_path = folder_name.as_ref().join(&license_info.filename);
+            fs::write(license_path, &license_info.content)
+                .with_context(|_| format_err!("Error when writing the license"))?
+        }
+
         Ok(())
     }
 
@@ -386,8 +415,21 @@ impl Parser {
         let reader = fs::File::open(&parser_path)
             .with_context(|_| format_err!("Error when opening the parser file"))?;
 
-        Ok(from_read(reader)
-            .with_context(|_| format_err!("Error when deserializing the parser"))?)
+        let mut parser: Parser = from_read(reader)
+            .with_context(|_| format_err!("Error when deserializing the parser"))?;
+
+        if let Some(info) = config.license_info {
+            let license_path = folder_name.as_ref().join(&info.filename);
+            let license_content = fs::read_to_string(&license_path)
+                .with_context(|_| format_err!("Error when reading the license"))?;
+
+            parser.license_info = Some(LicenseInfo {
+                content: license_content,
+                filename: info.filename,
+            })
+        };
+
+        Ok(parser)
     }
 }
 
@@ -793,6 +835,7 @@ impl Parser {
             threshold: self.threshold,
             stop_words: self.get_stop_words(),
             edge_cases: self.get_edge_cases(),
+            license_info: self.license_info.clone(),
         }
     }
 }
@@ -829,11 +872,16 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
+
+        let license_filename = "LICENSE".to_string();
+        let license_content = "Some license content\nIn Here".to_string();
+
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
+            .license_info(license_filename, license_content)
             .build()
             .unwrap();
         parser.dump(tdir.as_ref().join("parser")).unwrap();

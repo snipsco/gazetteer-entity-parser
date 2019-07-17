@@ -1,7 +1,14 @@
 use data::Gazetteer;
 use errors::*;
-use parser::Parser;
+use parser::{LicenseInfo, Parser};
 use EntityValue;
+
+// Same as LicenseInfo but with different serializeation
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+struct BuilderLicenseInfo {
+    filename: String,
+    content: String,
+}
 
 /// Struct exposing a builder allowing to configure and build a Parser
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -10,6 +17,8 @@ pub struct ParserBuilder {
     threshold: f32,
     n_gazetteer_stop_words: Option<usize>,
     additional_stop_words: Option<Vec<String>>,
+    #[serde(default)]
+    license_info: Option<BuilderLicenseInfo>,
 }
 
 impl Default for ParserBuilder {
@@ -19,6 +28,7 @@ impl Default for ParserBuilder {
             threshold: 1.0,
             n_gazetteer_stop_words: None,
             additional_stop_words: None,
+            license_info: None,
         }
     }
 }
@@ -67,6 +77,12 @@ impl ParserBuilder {
         self
     }
 
+    /// Set the license info
+    pub fn license_info(mut self, filename: String, content: String) -> Self {
+        self.license_info = Some(BuilderLicenseInfo { filename, content });
+        self
+    }
+
     /// Instantiate a Parser from the ParserBuilder
     pub fn build(self) -> Result<Parser> {
         if self.threshold < 0.0 || self.threshold > 1.0 {
@@ -84,6 +100,11 @@ impl ParserBuilder {
         parser.set_threshold(self.threshold);
         parser.set_stop_words(self.n_gazetteer_stop_words.unwrap_or(0),
                               self.additional_stop_words);
+        if let Some(parser_license_info) = self.license_info {
+            let license_info =
+                LicenseInfo::new(parser_license_info.filename, parser_license_info.content);
+            parser.set_license_info(Some(license_info));
+        }
         Ok(parser)
     }
 }
@@ -225,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization() {
-        let test_serialization_str = r#"{
+        let serialized_builder_str = r#"{
   "gazetteer": [
     {
       "resolved_value": "yala",
@@ -237,26 +258,53 @@ mod tests {
   "additional_stop_words": [
     "hello",
     "world"
-  ]
+  ],
+  "license_info": {
+     "filename": "LICENSE",
+     "content": "Some content here"
+  }
 }"#;
         let mut gazetteer = Gazetteer::default();
         gazetteer.add(EntityValue {
             resolved_value: "yala".to_string(),
             raw_value: "yolo".to_string(),
         });
+
+        let license_content = "Some content here".to_string();
+        let license_filename = "LICENSE".to_string();
+
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
             .n_stop_words(30)
+            .license_info(license_filename, license_content)
             .additional_stop_words(vec!["hello".to_string(), "world".to_string()]);
 
         // Deserialize builder from string and assert result
         let deserialized_builder: ParserBuilder =
-            serde_json::from_str(test_serialization_str).unwrap();
+            serde_json::from_str(serialized_builder_str).unwrap();
         assert_eq!(deserialized_builder, builder);
 
         // Serialize builder to string and assert
         let serialized_builder = serde_json::to_string_pretty(&builder).unwrap();
-        assert_eq!(serialized_builder, test_serialization_str);
+        let expected_builder_str = r#"{
+  "gazetteer": [
+    {
+      "resolved_value": "yala",
+      "raw_value": "yolo"
+    }
+  ],
+  "threshold": 0.6,
+  "n_gazetteer_stop_words": 30,
+  "additional_stop_words": [
+    "hello",
+    "world"
+  ],
+  "license_info": {
+    "filename": "LICENSE",
+    "content": " Some content here"
+  }
+}"#;
+        assert_eq!(serialized_builder, expected_builder_str);
     }
 }
