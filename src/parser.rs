@@ -849,6 +849,16 @@ mod tests {
     use parser_builder::ParserBuilder;
     use std::time::Instant;
 
+    fn get_license_info() -> LicenseInfo {
+        let license_content = "Some content here".to_string();
+        let license_filename = "LICENSE".to_string();
+        let license_info = LicenseInfo {
+            filename: license_filename,
+            content: license_content,
+        };
+        license_info
+    }
+
     #[test]
     fn test_serialization_deserialization() {
         let tdir = tempdir().unwrap();
@@ -866,26 +876,26 @@ mod tests {
             raw_value: "the stones".to_string(),
         });
 
-        let license_filename = "LICENSE".to_string();
-        let license_content = "Some license content\nIn Here".to_string();
+        let license_info = get_license_info();
 
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
-            .license_info(license_filename.clone(), license_content.clone())
+            .license_info(license_info)
             .build()
             .unwrap();
 
         let serialized_parser_path = tdir.as_ref().join("parser");
-        let license_path = serialized_parser_path.join(&license_filename);
+        let license_path = serialized_parser_path.join("LICENSE");
         parser.dump(serialized_parser_path).unwrap();
 
         assert!(license_path.exists());
 
+        let expected_content = "Some content here".to_string();
         let content = fs::read_to_string(license_path).unwrap();
-        assert_eq!(content, license_content);
+        assert_eq!(content, expected_content);
 
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 

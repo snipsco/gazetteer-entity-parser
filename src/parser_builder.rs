@@ -71,8 +71,8 @@ impl ParserBuilder {
     }
 
     /// Set the license info
-    pub fn license_info(mut self, filename: String, content: String) -> Self {
-        self.license_info = Some(LicenseInfo { filename, content });
+    pub fn license_info<T: Into<Option<LicenseInfo>>>(mut self, license_info: T) -> Self {
+        self.license_info = license_info.into();
         self
     }
 
@@ -107,6 +107,15 @@ mod tests {
     use super::*;
     use data::EntityValue;
     use serde_json;
+
+    fn get_license_info() -> LicenseInfo {
+        let license_content = "Some content here".to_string();
+        let license_filename = "LICENSE".to_string();
+        LicenseInfo {
+            filename: license_filename,
+            content: license_content,
+        }
+    }
 
     #[test]
     fn test_parser_builder_using_gazetteer() {
@@ -261,14 +270,13 @@ mod tests {
             raw_value: "yolo".to_string(),
         });
 
-        let license_content = "Some content here".to_string();
-        let license_filename = "LICENSE".to_string();
+        let license_info = get_license_info();
 
         let builder = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
             .n_stop_words(30)
-            .license_info(license_filename, license_content)
+            .license_info(license_info)
             .additional_stop_words(vec!["hello".to_string(), "world".to_string()]);
 
         // Deserialize builder from string and assert result
