@@ -1,7 +1,7 @@
 Gazetteer Entity Parser
 =======================
 
-.. image:: https://travis-ci.org/snipsco/gazetteer-entity-parser.svg?branch=develop
+.. image:: https://travis-ci.org/snipsco/gazetteer-entity-parser.svg?branch=master
    :target: https://travis-ci.org/snipsco/gazetteer-entity-parser
 
 This Rust library allows to parse and resolve entity values based on a gazetteer, in the context of
