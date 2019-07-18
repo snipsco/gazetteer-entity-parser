@@ -61,7 +61,6 @@ struct ParserConfig {
     threshold: f32,
     stop_words: HashSet<String>,
     edge_cases: HashSet<String>,
-    license_info: Option<LicenseInfo>,
 }
 
 /// Struct holding a possible match that can be grown by iterating over the input tokens
@@ -408,21 +407,8 @@ impl Parser {
         let reader = fs::File::open(&parser_path)
             .with_context(|_| format_err!("Error when opening the parser file"))?;
 
-        let mut parser: Parser = from_read(reader)
-            .with_context(|_| format_err!("Error when deserializing the parser"))?;
-
-        if let Some(info) = config.license_info {
-            let license_path = folder_name.as_ref().join(&info.filename);
-            let license_content = fs::read_to_string(&license_path)
-                .with_context(|_| format_err!("Error when reading the license"))?;
-
-            parser.license_info = Some(LicenseInfo {
-                content: license_content,
-                filename: info.filename,
-            })
-        };
-
-        Ok(parser)
+        Ok(from_read(reader)
+            .with_context(|_| format_err!("Error when deserializing the parser"))?)
     }
 }
 
@@ -828,7 +814,6 @@ impl Parser {
             threshold: self.threshold,
             stop_words: self.get_stop_words(),
             edge_cases: self.get_edge_cases(),
-            license_info: self.license_info.clone(),
         }
     }
 }
