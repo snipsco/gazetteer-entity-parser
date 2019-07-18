@@ -50,15 +50,8 @@ pub struct Parser {
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct LicenseInfo {
-    filename: String,
-    #[serde(skip)]
-    content: String,
-}
-
-impl LicenseInfo {
-    pub fn new(filename: String, content: String) -> Self {
-        Self { filename, content }
-    }
+    pub filename: String,
+    pub content: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -257,8 +250,8 @@ impl Parser {
     }
 
     /// Set the license info
-    pub fn set_license_info(&mut self, license_info: Option<LicenseInfo>) {
-        self.license_info = license_info;
+    pub fn set_license_info<T: Into<Option<LicenseInfo>>>(&mut self, license_info: T) {
+        self.license_info = license_info.into();
     }
 
     /// Get the set of stop words
@@ -881,10 +874,19 @@ mod tests {
             .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
-            .license_info(license_filename, license_content)
+            .license_info(license_filename.clone(), license_content.clone())
             .build()
             .unwrap();
-        parser.dump(tdir.as_ref().join("parser")).unwrap();
+
+        let serialized_parser_path = tdir.as_ref().join("parser");
+        let license_path = serialized_parser_path.join(&license_filename);
+        parser.dump(serialized_parser_path).unwrap();
+
+        assert!(license_path.exists());
+
+        let content = fs::read_to_string(license_path).unwrap();
+        assert_eq!(content, license_content);
+
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 
         assert_eq!(parser, reloaded_parser);
