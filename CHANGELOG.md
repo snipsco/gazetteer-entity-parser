@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+### Added
+- Add a license file to the gazetteer entity parser [#36](https://github.com/snipsco/gazetteer-entity-parser/pull/36)
+
 ## [0.7.0] - 2019-04-16
 ### Added
 - Add API to prepend entity values [#31](https://github.com/snipsco/gazetteer-entity-parser/pull/31)
@@ -19,6 +23,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Clearer `ParserBuilder`'s API 
 
+[Unreleased]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.7.0...HEAD
 [0.7.0]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.5.1...0.6.0
 [0.5.1]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.5.0...0.5.1
