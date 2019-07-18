@@ -43,6 +43,15 @@ pub struct Parser {
     injected_values: HashSet<String>,
     // Parsing threshold giving minimal fraction of tokens necessary to parse a value
     threshold: f32,
+    // License information associated to the parser's data
+    #[serde(default)]
+    license_info: Option<LicenseInfo>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub struct LicenseInfo {
+    pub filename: String,
+    pub content: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -239,6 +248,11 @@ impl Parser {
             .collect();
     }
 
+    /// Set the license info
+    pub fn set_license_info<T: Into<Option<LicenseInfo>>>(&mut self, license_info: T) {
+        self.license_info = license_info.into();
+    }
+
     /// Get the set of stop words
     pub fn get_stop_words(&self) -> HashSet<String> {
         self.stop_words
@@ -370,6 +384,13 @@ impl Parser {
 
         self.serialize(&mut Serializer::new(&mut writer))
             .with_context(|_| format_err!("Error when serializing the parser"))?;
+
+        if let Some(license_info) = &self.license_info {
+            let license_path = folder_name.as_ref().join(&license_info.filename);
+            fs::write(license_path, &license_info.content)
+                .with_context(|_| format_err!("Error when writing the license"))?
+        }
+
         Ok(())
     }
 
@@ -813,6 +834,16 @@ mod tests {
     use parser_builder::ParserBuilder;
     use std::time::Instant;
 
+    fn get_license_info() -> LicenseInfo {
+        let license_content = "Some content here".to_string();
+        let license_filename = "LICENSE".to_string();
+        let license_info = LicenseInfo {
+            filename: license_filename,
+            content: license_content,
+        };
+        license_info
+    }
+
     #[test]
     fn test_serialization_deserialization() {
         let tdir = tempdir().unwrap();
@@ -829,14 +860,28 @@ mod tests {
             resolved_value: "The Rolling Stones".to_string(),
             raw_value: "the stones".to_string(),
         });
+
+        let license_info = get_license_info();
+
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .n_stop_words(2)
             .additional_stop_words(vec!["hello".to_string()])
+            .license_info(license_info)
             .build()
             .unwrap();
-        parser.dump(tdir.as_ref().join("parser")).unwrap();
+
+        let serialized_parser_path = tdir.as_ref().join("parser");
+        let license_path = serialized_parser_path.join("LICENSE");
+        parser.dump(serialized_parser_path).unwrap();
+
+        assert!(license_path.exists());
+
+        let expected_content = "Some content here".to_string();
+        let content = fs::read_to_string(license_path).unwrap();
+        assert_eq!(content, expected_content);
+
         let reloaded_parser = Parser::from_folder(tdir.as_ref().join("parser")).unwrap();
 
         assert_eq!(parser, reloaded_parser);
