@@ -88,7 +88,7 @@ mod parser_builder;
 mod symbol_table;
 mod utils;
 
-pub use data::{EntityValue, Gazetteer};
-pub use parser::{ParsedValue, Parser};
-pub use parser_builder::ParserBuilder;
+pub use data::*;
+pub use parser::*;
+pub use parser_builder::*;
 pub mod errors;

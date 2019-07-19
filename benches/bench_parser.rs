@@ -5,23 +5,21 @@ extern crate gazetteer_entity_parser;
 extern crate rand;
 extern crate serde_json;
 
-use std::collections::HashSet;
-
 use criterion::Criterion;
+use gazetteer_entity_parser::*;
 use rand::distributions::Alphanumeric;
-use rand::seq::sample_iter;
+use rand::rngs::ThreadRng;
+use rand::seq::IteratorRandom;
 use rand::thread_rng;
 use rand::Rng;
-
-use gazetteer_entity_parser::*;
+use std::collections::HashSet;
 
 pub fn test_data_path() -> ::std::path::PathBuf {
-    ::dinghy_test::try_test_file_path("data")
-        .unwrap_or_else(|| "data".into())
+    ::dinghy_test::try_test_file_path("data").unwrap_or_else(|| "data".into())
 }
 
 /// Function generating a random string representing a single word of various length
-fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
+fn generate_random_string(rng: &mut ThreadRng) -> String {
     let n_char = rng.gen_range(3, 8);
     rng.sample_iter(&Alphanumeric).take(n_char).collect()
 }
@@ -31,7 +29,7 @@ fn generate_random_string(rng: &mut rand::ThreadRng) -> String {
 struct RandomStringGenerator {
     vocabulary: Vec<String>,
     max_words: usize,
-    rng: rand::ThreadRng,
+    rng: ThreadRng,
     already_generated: HashSet<String>,
 }
 
@@ -56,8 +54,10 @@ impl Iterator for RandomStringGenerator {
     fn next(&mut self) -> Option<String> {
         loop {
             let n_words = self.rng.gen_range(1, self.max_words);
-            let generated_value = sample_iter(&mut self.rng, self.vocabulary.iter(), n_words)
-                .unwrap()
+            let generated_value = self
+                .vocabulary
+                .iter()
+                .choose_multiple(&mut self.rng, n_words)
                 .iter()
                 .map(|sample_string| sample_string.to_string())
                 .collect::<Vec<_>>()
@@ -84,7 +84,9 @@ fn generate_random_gazetteer(
             raw_value: string,
         })
         .collect();
-    let gazetteer = Gazetteer { data: entity_values };
+    let gazetteer = Gazetteer {
+        data: entity_values,
+    };
     (gazetteer, rsg)
 }
 
@@ -140,10 +142,16 @@ fn loading(c: &mut Criterion) {
 
         parser.dump(&parser_directory).unwrap();
     }
-    c.bench_function("Loading random gazetteer parser with low redundancy", move |b| {
-        b.iter(|| Parser::from_folder(parser_directory.clone()).unwrap())
-    });
+    c.bench_function(
+        "Loading random gazetteer parser with low redundancy",
+        move |b| b.iter(|| Parser::from_folder(parser_directory.clone()).unwrap()),
+    );
 }
 
-criterion_group!(benches, parsing_low_redundancy, parsing_high_redundancy, loading);
+criterion_group!(
+    benches,
+    parsing_low_redundancy,
+    parsing_high_redundancy,
+    loading
+);
 criterion_main!(benches);
