@@ -16,10 +16,10 @@ fnv = "1.0"
 
 [dev-dependencies]
 criterion = "0.2"
-dinghy-test = "0.3"
-rand = "0.5"
+dinghy-test = "0.4"
+rand = "0.7"
 tempfile = "3"
-mio_httpc = {version = "0.6", features = ["rtls"]}
+mio_httpc = {version = "0.8", features = ["rtls"]}
 clap = "2"
 
 [[bench]]
