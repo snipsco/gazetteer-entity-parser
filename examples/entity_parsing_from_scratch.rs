@@ -30,18 +30,27 @@ fn main() {
 
     let sentence = "My favourite artists are the stones and fab four";
     let extracted_entities = parser.run(sentence).unwrap();
-    assert_eq!(extracted_entities,
-               vec![
-                   ParsedValue {
-                       raw_value: "the stones".to_string(),
-                       resolved_value: "The Rolling Stones".to_string(),
-                       range: 25..35,
-                       matched_value: "the rolling stones".to_string()
-                   },
-                   ParsedValue {
-                       raw_value: "fab four".to_string(),
-                       resolved_value: "The Beatles".to_string(),
-                       range: 40..48,
-                       matched_value: "the fab four".to_string(),
-                   }]);
+    assert_eq!(
+        extracted_entities,
+        vec![
+            ParsedValue {
+                raw_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
+                range: 25..35,
+            },
+            ParsedValue {
+                raw_value: "fab four".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Beatles".to_string(),
+                    matched_value: "the fab four".to_string(),
+                },
+                alternatives: vec![],
+                range: 40..48,
+            }
+        ]
+    );
 }

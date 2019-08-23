@@ -75,6 +75,7 @@ pub struct PossibleMatch {
     first_token_in_resolution: usize,
     last_token_in_resolution: usize,
     rank: u32,
+    alternative_resolved_values: Vec<(u32, usize)>,
 }
 
 impl PossibleMatch {
@@ -116,10 +117,16 @@ impl PartialOrd for PossibleMatch {
 /// composing the raw value in the input query.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedValue {
-    pub resolved_value: String,
+    pub resolved_value: ResolvedValue,
+    pub alternatives: Vec<ResolvedValue>,
     // character-level
     pub range: Range<usize>,
     pub raw_value: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ResolvedValue {
+    pub resolved: String,
     pub matched_value: String,
 }
 
@@ -435,29 +442,33 @@ impl Parser {
         })
     }
 
-    /// get the underlying matched value associated to a `PossibleMatch`
-    fn get_matched_value(&self, possible_match: &PossibleMatch) -> Result<String> {
-        Ok(self
-            .resolved_value_to_tokens
-            .get(&possible_match.resolved_value)
+    /// get the resolved values from a possible match
+    fn get_resolved_value(&self, resolved_value_index: u32) -> Result<ResolvedValue> {
+        let resolved = self
+            .resolved_symbol_table
+            .find_index(&resolved_value_index)
+            .cloned()
             .ok_or_else(|| {
-                format_err!(
-                    "Missing key for resolved value {}",
-                    possible_match.resolved_value
-                )
-            })?
+                format_err!("Missing key for resolved value {}", resolved_value_index)
+            })?;
+        let matched_value = self
+            .resolved_value_to_tokens
+            .get(&resolved_value_index)
+            .ok_or_else(|| format_err!("Missing key for resolved value {}", resolved_value_index))?
             .1
             .iter()
             .flat_map(|token_idx| self.tokens_symbol_table.find_index(token_idx))
             .map(|token_string| token_string.as_str())
             .collect::<Vec<_>>()
-            .join(" "))
+            .join(" ");
+        Ok(ResolvedValue {
+            resolved,
+            matched_value,
+        })
     }
 
-    /// Find all possible matches in a string.
-    /// Returns a hashmap, indexed by resolved values. The corresponding value is a vec of tuples
-    /// each tuple is a possible match for the resolved value, and is made of
-    /// (range of match, number of skips, index of last matched token in the resolved value)
+    /// Find and return all possible matches in a string, ordered by the order defined on
+    /// `PossibleMatch`, from max to min.
     fn find_possible_matches(
         &self,
         input: &str,
@@ -528,7 +539,7 @@ impl Parser {
         }
 
         // Add to the heap the possible matches that remain
-        Ok(possible_matches
+        let mut matches_heap = possible_matches
             .values()
             .filter(|possible_match| {
                 if self.edge_cases.contains(&possible_match.resolved_value) {
@@ -540,8 +551,26 @@ impl Parser {
             .fold(matches_heap, |mut acc, possible_match| {
                 acc.push(possible_match.clone());
                 acc
-            }))
+            });
+        Ok(matches_heap)
     }
+
+    //    fn group_matches(mut matches_heap: BinaryHeap<PossibleMatch>) -> BinaryHeap<PossibleMatch> {
+    //        let mut grouped_matches = BinaryHeap::default();
+    //        let mut opt_previous_match: Option<PossibleMatch> = None;
+    //        while !matches_heap.is_empty() {
+    //            let possible_match = matches_heap.pop().unwrap();
+    //            match opt_previous_match {
+    //                Some(previous_match) => {
+    //                    if previous_match.range == possible_match.range {
+    //                        previous_match
+    //                    }
+    //                },
+    //                None => opt_previous_match = Some(possible_match)
+    //            }
+    //        }
+    //        grouped_matches
+    //    }
 
     fn update_or_insert_possible_match(
         &self,
@@ -634,6 +663,7 @@ impl Parser {
             last_token_in_resolution,
             n_consumed_tokens: 1,
             rank: *rank,
+            alternative_resolved_values: vec![],
         };
         Ok(())
     }
@@ -665,6 +695,7 @@ impl Parser {
             n_consumed_tokens: 1,
             raw_value_length: otokens.len() as u32,
             rank: *rank,
+            alternative_resolved_values: vec![],
         };
         let mut n_skips = last_token_in_resolution as u32;
         // Backtrack to check if we left out from skipped words at the beginning
@@ -731,6 +762,7 @@ impl Parser {
                 last_token_in_resolution: 0, // we are not going to need this one
                 first_token_in_resolution: 0, // we are not going to need this one
                 rank: possible_match.rank,
+                alternative_resolved_values: possible_match.alternative_resolved_values,
             }),
             _ => None,
         }
@@ -786,17 +818,12 @@ impl Parser {
                     .skip(possible_match.range.start)
                     .take(possible_match.range.len())
                     .collect(),
-                resolved_value: self
-                    .resolved_symbol_table
-                    .find_index(&possible_match.resolved_value)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format_err!(
-                            "Missing key for resolved value {}",
-                            possible_match.resolved_value
-                        )
-                    })?,
-                matched_value: self.get_matched_value(&possible_match)?,
+                resolved_value: self.get_resolved_value(possible_match.resolved_value)?,
+                alternatives: possible_match
+                    .alternative_resolved_values
+                    .iter()
+                    .map(|(idx, _)| Ok(self.get_resolved_value(*idx)?))
+                    .collect::<Result<Vec<_>>>()?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -951,8 +978,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the rolling".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string()
+                },
+                alternatives: vec![],
                 range: 20..31,
             }]
         );
@@ -966,8 +996,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..38,
             }]
         );
@@ -981,8 +1014,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the stones rolling".to_string(),
-                resolved_value: "The Stones Rolling".to_string(),
-                matched_value: "the stones rolling".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Stones Rolling".to_string(),
+                    matched_value: "the stones rolling".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..38,
             }]
         );
@@ -994,8 +1030,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
-                resolved_value: "The Stones".to_string(),
-                matched_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Stones".to_string(),
+                    matched_value: "the stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..30,
             }]
         );
@@ -1013,8 +1052,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 26..44,
             }]
         );
@@ -1027,8 +1069,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 30..48,
             }]
         );
@@ -1066,14 +1111,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        matched_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        matched_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
@@ -1085,14 +1136,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        matched_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        matched_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 22..36,
                 },
             ]
@@ -1106,14 +1163,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        matched_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
                 ParsedValue {
                     raw_value: "blink eight".to_string(),
-                    resolved_value: "Blink-182".to_string(),
-                    matched_value: "blink one eight two".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Blink-182".to_string(),
+                        matched_value: "blink one eight two".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 39..50,
                 },
             ]
@@ -1150,8 +1213,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "blink 182".to_string(),
-                resolved_value: "Blink-182".to_string(),
-                matched_value: "blink 182".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    matched_value: "blink 182".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..25,
             }]
         );
@@ -1162,8 +1228,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "blink".to_string(),
-                resolved_value: "Blink-182".to_string(),
-                matched_value: "blink".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    matched_value: "blink".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..21,
             }]
         );
@@ -1174,8 +1243,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "one eight two".to_string(),
-                resolved_value: "Blink-182".to_string(),
-                matched_value: "blink one eight two".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    matched_value: "blink one eight two".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..29,
             }]
         );
@@ -1216,8 +1288,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..26,
             }]
         );
@@ -1227,8 +1302,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
-                resolved_value: "Jacques Brel".to_string(),
-                matched_value: "jacques brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Jacques Brel".to_string(),
+                    matched_value: "jacques brel".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..20,
             }]
         );
@@ -1239,8 +1317,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    matched_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..33,
             }]
         );
@@ -1250,8 +1331,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "daniel brel".to_string(),
-                resolved_value: "Daniel Brel".to_string(),
-                matched_value: "daniel brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Daniel Brel".to_string(),
+                    matched_value: "daniel brel".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..27,
             }]
         );
@@ -1261,8 +1345,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "jacques".to_string(),
-                resolved_value: "Jacques".to_string(),
-                matched_value: "jacques".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Jacques".to_string(),
+                    matched_value: "jacques".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..23,
             }]
         );
@@ -1292,8 +1379,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
-                resolved_value: "Jacques Brel".to_string(),
-                matched_value: "jacques brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Jacques Brel".to_string(),
+                    matched_value: "jacques brel".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..20,
             }]
         );
@@ -1316,8 +1406,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "brel".to_string(),
-                resolved_value: "Daniel Brel".to_string(),
-                matched_value: "daniel brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Daniel Brel".to_string(),
+                    matched_value: "daniel brel".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..20,
             }]
         );
@@ -1360,10 +1453,13 @@ mod tests {
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "Quand est-ce ?".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Quand est-ce ?".to_string(),
+                    matched_value: "quand est -ce".to_string(),
+                },
                 range: 4..13,
                 raw_value: "quand est".to_string(),
-                matched_value: "quand est -ce".to_string(),
+                alternatives: vec![],
             }]
         )
     }
@@ -1386,10 +1482,13 @@ mod tests {
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "The Rolling Stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
                 range: 8..18,
                 raw_value: "the stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                alternatives: vec![],
             }]
         );
     }
@@ -1429,15 +1528,21 @@ mod tests {
             parsed,
             vec![
                 ParsedValue {
-                    resolved_value: "Les Enfoirés".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Les Enfoirés".to_string(),
+                        matched_value: "les enfoirés".to_string(),
+                    },
                     range: 16..19,
                     raw_value: "les".to_string(),
-                    matched_value: "les enfoirés".to_string(),
+                    alternatives: vec![],
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        matched_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
@@ -1450,20 +1555,29 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        matched_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
-                    resolved_value: "Les Enfoirés".to_string(),
-                    matched_value: "les enfoirés".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Les Enfoirés".to_string(),
+                        matched_value: "les enfoirés".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 16..19,
                     raw_value: "les".to_string(),
                 },
                 ParsedValue {
                     raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        matched_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
@@ -1475,8 +1589,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..34,
             }]
         );
@@ -1507,8 +1624,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 8..26,
             }]
         );
@@ -1543,8 +1663,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    matched_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..33,
             }]
         );
@@ -1555,8 +1678,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..26,
             }]
         );
@@ -1570,8 +1696,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    matched_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..33,
             }]
         );
@@ -1582,8 +1711,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "the stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    matched_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..26,
             }]
         );
@@ -1633,8 +1765,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "queens the stone age".to_string(),
-                resolved_value: "Queens Of The Stone Age".to_string(),
-                matched_value: "queens of the stone age".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Queens Of The Stone Age".to_string(),
+                    matched_value: "queens of the stone age".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..36,
             }]
         );
@@ -1760,8 +1895,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
-                resolved_value: "The Black and White Album".to_string(),
-                matched_value: "the black and white album".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Black and White Album".to_string(),
+                    matched_value: "the black and white album".to_string(),
+                },
+                alternatives: vec![],
                 range: 19..40,
             }]
         );
@@ -1771,8 +1909,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "one two three four".to_string(),
-                resolved_value: "1 2 3 4".to_string(),
-                matched_value: "one two three four".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "1 2 3 4".to_string(),
+                    matched_value: "one two three four".to_string(),
+                },
+                alternatives: vec![],
                 range: 0..18,
             }]
         );
@@ -1784,14 +1925,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
-                    resolved_value: "1 2 3 4".to_string(),
-                    matched_value: "one two three four".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "1 2 3 4".to_string(),
+                        matched_value: "one two three four".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "five six".to_string(),
-                    resolved_value: "3 4 5 6".to_string(),
-                    matched_value: "three four five six".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "3 4 5 6".to_string(),
+                        matched_value: "three four five six".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 24..32,
                 },
             ]
@@ -1805,14 +1952,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "one two three four".to_string(),
-                    resolved_value: "1 2 3 4".to_string(),
-                    matched_value: "one two three four".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "1 2 3 4".to_string(),
+                        matched_value: "one two three four".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 5..23,
                 },
                 ParsedValue {
                     raw_value: "six seven".to_string(),
-                    resolved_value: "6 7".to_string(),
-                    matched_value: "six seven".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "6 7".to_string(),
+                        matched_value: "six seven".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 29..38,
                 },
             ]
@@ -1839,8 +1992,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    matched_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..34,
             }]
         );
@@ -1851,8 +2007,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "bowie".to_string(),
-                resolved_value: "David Bowie".to_string(),
-                matched_value: "david bowie".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "David Bowie".to_string(),
+                    matched_value: "david bowie".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..21,
             }]
         );
@@ -1876,8 +2035,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "black and white album".to_string(),
-                resolved_value: "The Black and White Album".to_string(),
-                matched_value: "black and white album".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Black and White Album".to_string(),
+                    matched_value: "black and white album".to_string(),
+                },
+                alternatives: vec![],
                 range: 19..40,
             }]
         );
@@ -1889,8 +2051,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "dark side of the moon".to_string(),
-                resolved_value: "Dark Side of the Moon".to_string(),
-                matched_value: "dark side of the moon".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Dark Side of the Moon".to_string(),
+                    matched_value: "dark side of the moon".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..37,
             }]
         );
@@ -1904,14 +2069,20 @@ mod tests {
             vec![
                 ParsedValue {
                     raw_value: "je veux".to_string(),
-                    resolved_value: "Je veux du bonheur".to_string(),
-                    matched_value: "je veux du bonheur".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je veux du bonheur".to_string(),
+                        matched_value: "je veux du bonheur".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..7,
                 },
                 ParsedValue {
                     raw_value: "dark side of the moon".to_string(),
-                    resolved_value: "Dark Side of the Moon".to_string(),
-                    matched_value: "dark side of the moon".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Dark Side of the Moon".to_string(),
+                        matched_value: "dark side of the moon".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 16..37,
                 },
             ]
@@ -1954,8 +2125,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch".to_string(),
-                resolved_value: "Hans Knappertsbusch".to_string(),
-                matched_value: "hans knappertsbusch".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Hans Knappertsbusch".to_string(),
+                    matched_value: "hans knappertsbusch".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..35,
             }]
         );
@@ -1970,8 +2144,11 @@ mod tests {
             parsed,
             vec![ParsedValue {
                 raw_value: "hans knappertsbusch conducts".to_string(),
-                resolved_value: "Hans Knappertsbusch conducts".to_string(),
-                matched_value: "hans knappertsbusch conducts".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Hans Knappertsbusch conducts".to_string(),
+                    matched_value: "hans knappertsbusch conducts".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..44,
             }]
         );

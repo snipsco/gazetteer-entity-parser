@@ -11,7 +11,7 @@
 //!
 //!```rust
 //!
-//! use gazetteer_entity_parser::{Gazetteer, ParserBuilder, EntityValue, ParsedValue};
+//! use gazetteer_entity_parser::{Gazetteer, ParserBuilder, EntityValue, ParsedValue, ResolvedValue};
 //!
 //! let mut gazetteer = Gazetteer::default();
 //! // We fill the gazetteer with artists, sorted by popularity
@@ -52,8 +52,11 @@
 //!     parsed_stones,
 //!     vec![ParsedValue {
 //!         raw_value: "the stones".to_string(),
-//!         resolved_value: "The Rolling Stones".to_string(),
-//!         matched_value: "the rolling stones".to_string(),
+//!         resolved_value: ResolvedValue {
+//!             resolved: "The Rolling Stones".to_string(),
+//!             matched_value: "the rolling stones".to_string()
+//!         },
+//!         alternatives: vec![],
 //!         range: 20..30,
 //!     }]
 //! );
@@ -64,8 +67,11 @@
 //!     parsed_brel,
 //!     vec![ParsedValue {
 //!         raw_value: "brel".to_string(),
-//!         resolved_value: "Jacques Brel".to_string(),
-//!         matched_value: "jacques brel".to_string(),
+//!         resolved_value: ResolvedValue {
+//!             resolved: "Jacques Brel".to_string(),
+//!             matched_value: "jacques brel".to_string()
+//!         },
+//!         alternatives: vec![],
 //!         range: 20..24,
 //!     }]
 //! );
