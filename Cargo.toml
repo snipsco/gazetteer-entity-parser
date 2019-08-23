@@ -19,7 +19,6 @@ criterion = "0.2"
 dinghy-test = "0.4"
 rand = "0.7"
 tempfile = "3"
-mio_httpc = {version = "0.8", features = ["rtls"]}
 clap = "2"
 
 [[bench]]

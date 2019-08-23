@@ -17,27 +17,15 @@ Example
     use gazetteer_entity_parser::*;
 
     fn main() {
+        let gazetteer = gazetteer!(
+            ("king of pop", "Michael Jackson"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("the beatles", "The Beatles"),
+            ("queen of soul", "Aretha Franklin"),
+            ("the red hot chili peppers", "The Red Hot Chili Peppers"),
+        );
         let parser = ParserBuilder::default()
-            .add_value(EntityValue {
-                raw_value: "king of pop".to_string(),
-                resolved_value: "Michael Jackson".to_string(),
-            })
-            .add_value(EntityValue {
-                raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-            })
-            .add_value(EntityValue {
-                raw_value: "the fab four".to_string(),
-                resolved_value: "The Beatles".to_string(),
-            })
-            .add_value(EntityValue {
-                raw_value: "queen of soul".to_string(),
-                resolved_value: "Aretha Franklin".to_string(),
-            })
-            .add_value(EntityValue {
-                raw_value: "the red hot chili peppers".to_string(),
-                resolved_value: "The Red Hot Chili Peppers".to_string(),
-            })
+            .gazetteer(gazetteer)
             .minimum_tokens_ratio(2. / 3.)
             .build()
             .unwrap();
