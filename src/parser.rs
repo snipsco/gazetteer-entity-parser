@@ -278,9 +278,11 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>> {
+    /// The `max_alternatives` defines how many alternative resolved values must be returned in
+    /// addition to the top one.
+    pub fn run(&self, input: &str, max_alternatives: usize) -> Result<Vec<ParsedValue>> {
         let matches_heap = self
-            .find_possible_matches(input, self.threshold)
+            .find_possible_matches(input, self.threshold, max_alternatives)
             .with_context(|_| format_err!("Error when finding possible matches"))?;
         Ok(self
             .parse_input(input, matches_heap)
@@ -474,6 +476,7 @@ impl Parser {
         &self,
         input: &str,
         threshold: f32,
+        max_alternatives: usize,
     ) -> Result<BinaryHeap<PossibleMatch>> {
         let mut partial_matches: HashMap<u32, PossibleMatch> = HashMap::default();
         let mut final_matches: Vec<PossibleMatch> = vec![];
@@ -554,7 +557,7 @@ impl Parser {
             });
 
         // Group possible matches that matched the same underlying range
-        Ok(group_matches(final_matches))
+        Ok(group_matches(final_matches, max_alternatives))
     }
 
     fn update_or_insert_possible_match(
@@ -830,7 +833,10 @@ impl Parser {
     }
 }
 
-fn group_matches(final_matches: Vec<PossibleMatch>) -> BinaryHeap<PossibleMatch> {
+fn group_matches(
+    final_matches: Vec<PossibleMatch>,
+    max_alternatives: usize,
+) -> BinaryHeap<PossibleMatch> {
     final_matches
         .iter()
         .fold(
@@ -850,7 +856,9 @@ fn group_matches(final_matches: Vec<PossibleMatch>) -> BinaryHeap<PossibleMatch>
         .into_iter()
         .map(|(_, mut matches)| {
             let mut best_match = matches.pop().unwrap().clone();
-            while !matches.is_empty() {
+            while !matches.is_empty()
+                && best_match.alternative_resolved_values.len() < max_alternatives
+            {
                 let m = matches.pop().unwrap();
                 // Only add alternative with the same matching ratio
                 if m.raw_value_length > best_match.raw_value_length {
@@ -967,7 +975,7 @@ mod tests {
 
         // Value starting with a stop word
         parser.set_threshold(0.6);
-        let parsed = parser.run("je veux écouter les the rolling").unwrap();
+        let parsed = parser.run("je veux écouter les the rolling", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -987,7 +995,7 @@ mod tests {
         // Value starting with a stop word and ending with one
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("je veux écouter les the rolling stones")
+            .run("je veux écouter les the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1005,7 +1013,7 @@ mod tests {
         // Value starting with two stop words
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("je veux écouter les the stones rolling")
+            .run("je veux écouter les the stones rolling", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1022,7 +1030,7 @@ mod tests {
 
         // Edge case
         parser.set_threshold(1.0);
-        let parsed = parser.run("je veux écouter les the stones").unwrap();
+        let parsed = parser.run("je veux écouter les the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1038,12 +1046,12 @@ mod tests {
 
         // Edge case should not match if not present in full
         parser.set_threshold(0.5);
-        let parsed = parser.run("je veux écouter les the").unwrap();
+        let parsed = parser.run("je veux écouter les the", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
         // Sentence containing an additional stop word which is absent from the gazetteer
         let parsed = parser
-            .run("hello I want to listen to the rolling stones")
+            .run("hello I want to listen to the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1060,7 +1068,7 @@ mod tests {
 
         // Multiple stop words at the beginning of a value
         let parsed = parser
-            .run("hello I want to listen to the the rolling stones")
+            .run("hello I want to listen to the the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1091,7 +1099,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let mut parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1116,7 +1126,9 @@ mod tests {
             ]
         );
 
-        parsed = parser.run("je veux ecouter les \t rolling stones").unwrap();
+        parsed = parser
+            .run("je veux ecouter les \t rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1142,7 +1154,7 @@ mod tests {
         );
 
         parsed = parser
-            .run("i want to listen to rolling stones and blink eight")
+            .run("i want to listen to rolling stones and blink eight", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1168,7 +1180,7 @@ mod tests {
             ]
         );
 
-        parsed = parser.run("joue moi quelque chose").unwrap();
+        parsed = parser.run("joue moi quelque chose", 5).unwrap();
         assert_eq!(parsed, vec![]);
     }
 
@@ -1186,7 +1198,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser.run("let's listen to blink 182").unwrap();
+        let mut parsed = parser.run("let's listen to blink 182", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1201,7 +1213,7 @@ mod tests {
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to blink").unwrap();
+        parsed = parser.run("let's listen to blink", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1216,7 +1228,7 @@ mod tests {
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to one eight two").unwrap();
+        parsed = parser.run("let's listen to one eight two", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1248,7 +1260,7 @@ mod tests {
             .unwrap();
 
         // When there is a tie in terms of number of token matched, match the most popular choice
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1266,7 +1278,7 @@ mod tests {
         );
 
         // Resolve to the value with more words matching regardless of popularity
-        let parsed = parser.run("je veux écouter the flying stones").unwrap();
+        let parsed = parser.run("je veux écouter the flying stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1281,7 +1293,7 @@ mod tests {
         );
 
         // Resolve to the value with the best matching ratio
-        let parsed = parser.run("je veux écouter jacques").unwrap();
+        let parsed = parser.run("je veux écouter jacques", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1310,7 +1322,7 @@ mod tests {
 
         let input = "je veux écouter brel";
 
-        let parsed = parser.run(input).unwrap();
+        let parsed = parser.run(input, 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1337,7 +1349,7 @@ mod tests {
 
         parser.prepend_values(values_to_prepend);
 
-        let parsed = parser.run(input).unwrap();
+        let parsed = parser.run(input, 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1371,7 +1383,7 @@ mod tests {
             .unwrap();
 
         let parsed = parser
-            .run("the music I want to listen to is rolling on stones")
+            .run("the music I want to listen to is rolling on stones", 5)
             .unwrap();
         assert_eq!(parsed, vec![]);
     }
@@ -1385,7 +1397,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("non quand est survivre").unwrap();
+        let parsed = parser.run("non quand est survivre", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1409,7 +1421,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("rolling the stones").unwrap();
+        let parsed = parser.run("rolling the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1440,7 +1452,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1466,7 +1480,9 @@ mod tests {
         );
 
         parser.set_threshold(0.3);
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1501,7 +1517,9 @@ mod tests {
         );
 
         parser.set_threshold(0.6);
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1525,12 +1543,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("the the the").unwrap();
+        let parsed = parser.run("the the the", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("the the the rolling stones stones stones stones")
+            .run("the the the rolling stones stones stones stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1564,7 +1582,7 @@ mod tests {
         parser
             .inject_new_values(new_values.clone(), false, false)
             .unwrap();
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
 
         assert_eq!(
             parsed,
@@ -1579,7 +1597,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
 
         assert_eq!(
             parsed,
@@ -1600,7 +1618,7 @@ mod tests {
         // Test with preprend set to true
         parser.inject_new_values(new_values, true, true).unwrap();
 
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
 
         assert_eq!(
             parsed,
@@ -1615,7 +1633,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
 
         assert_eq!(
             parsed,
@@ -1665,10 +1683,12 @@ mod tests {
             .unwrap();
         parser.inject_new_values(new_values_2, true, true).unwrap();
 
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
-        let parsed = parser.run("je veux écouter queens the stone age").unwrap();
+        let parsed = parser
+            .run("je veux écouter queens the stone age", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1774,7 +1794,7 @@ mod tests {
             .unwrap();
 
         let parsed = parser
-            .run("je veux écouter le black and white album")
+            .run("je veux écouter le black and white album", 5)
             .unwrap();
         assert_eq!(
             parsed,
@@ -1789,7 +1809,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("zero one two three four five").unwrap();
+        let parsed = parser.run("zero one two three four five", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1803,7 +1823,7 @@ mod tests {
             },]
         );
 
-        let parsed = parser.run("zero one two three four five six").unwrap();
+        let parsed = parser.run("zero one two three four five six", 5).unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -1843,7 +1863,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("I want to play to invader").unwrap();
+        let parsed = parser.run("I want to play to invader", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1856,6 +1876,45 @@ mod tests {
                     resolved: "Invader Attack".to_string(),
                     raw_value: "invader attack".to_string(),
                 }],
+                range: 18..25,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_max_alternative_matches() {
+        let gazetteer = gazetteer!(
+            ("space invader", "Space Invader"),
+            ("invader war", "Invader War"),
+            ("invader attack", "Invader Attack"),
+            ("invader life", "Invader Life"),
+        );
+
+        let parser = ParserBuilder::default()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
+
+        let parsed = parser.run("I want to play to invader", 2).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                matched_value: "invader".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Space Invader".to_string(),
+                    raw_value: "space invader".to_string(),
+                },
+                alternatives: vec![
+                    ResolvedValue {
+                        resolved: "Invader War".to_string(),
+                        raw_value: "invader war".to_string(),
+                    },
+                    ResolvedValue {
+                        resolved: "Invader Attack".to_string(),
+                        raw_value: "invader attack".to_string(),
+                    }
+                ],
                 range: 18..25,
             }]
         );
