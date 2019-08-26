@@ -145,9 +145,9 @@ impl Ord for ParsedValue {
 
 impl PartialOrd for ParsedValue {
     fn partial_cmp(&self, other: &ParsedValue) -> Option<Ordering> {
-        if self.range.end < other.range.start {
+        if self.range.end <= other.range.start {
             Some(Ordering::Less)
-        } else if self.range.start > other.range.end {
+        } else if self.range.start >= other.range.end {
             Some(Ordering::Greater)
         } else {
             None
@@ -356,8 +356,8 @@ impl Parser {
             // we inject new values from rank 0 to n_new_values - 1
             true => 0,
             // we inject new values from the current last rank onwards
-            false => self.resolved_value_to_tokens.len(),
-        } as u32;
+            false => self.resolved_value_to_tokens.len() as u32,
+        };
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
             self.add_value(entity_value.clone(), new_start_rank + rank as u32);
