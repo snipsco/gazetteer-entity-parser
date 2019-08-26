@@ -2,6 +2,9 @@
 name = "gazetteer-entity-parser"
 version = "0.7.2"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
+repository = "https://github.com/snipsco/gazetteer-entity-parser"
+description = "Gazetteer-based entity parser"
+edition = "2018"
 
 [profile.bench]
 debug = true
@@ -9,8 +12,7 @@ debug = true
 [dependencies]
 failure = "0.1"
 serde_json = "1.0"
-serde_derive = "1.0"
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 rmp-serde = "0.13"
 fnv = "1.0"
 

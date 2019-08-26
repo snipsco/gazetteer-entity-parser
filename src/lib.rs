@@ -79,17 +79,6 @@
 //!     }]
 //! );
 //!```
-
-#[macro_use]
-extern crate failure;
-extern crate fnv;
-extern crate rmp_serde as rmps;
-extern crate serde;
-extern crate serde_json;
-
-#[macro_use]
-extern crate serde_derive;
-
 mod constants;
 mod data;
 mod parser;

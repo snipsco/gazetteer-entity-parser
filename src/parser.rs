@@ -1,10 +1,12 @@
-use constants::*;
-use data::EntityValue;
-use errors::*;
-use failure::ResultExt;
+use crate::constants::*;
+use crate::data::EntityValue;
+use crate::errors::*;
+use crate::symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
+use crate::utils::{check_threshold, whitespace_tokenizer};
+use failure::{format_err, ResultExt};
 use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
-use rmps::{from_read, Serializer};
-use serde::Serialize;
+use rmp_serde::{from_read, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -12,8 +14,6 @@ use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
-use utils::{check_threshold, whitespace_tokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -867,15 +867,13 @@ fn group_matches(final_matches: Vec<PossibleMatch>) -> BinaryHeap<PossibleMatch>
 
 #[cfg(test)]
 mod tests {
-    extern crate tempfile;
-
-    use self::tempfile::tempdir;
     use super::*;
+    use crate::data::EntityValue;
+    use crate::data::Gazetteer;
     use crate::gazetteer;
-    use data::EntityValue;
-    use data::Gazetteer;
+    use crate::parser_builder::ParserBuilder;
     use failure::ResultExt;
-    use parser_builder::ParserBuilder;
+    use tempfile::tempdir;
 
     fn get_license_info() -> LicenseInfo {
         let license_content = "Some content here".to_string();
