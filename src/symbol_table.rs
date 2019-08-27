@@ -1,9 +1,9 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
 /// Implementation of a symbol table that
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
-
-use std::collections::BTreeMap;
-
 #[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct TokenSymbolTable {
     string_to_index: BTreeMap<String, u32>,
@@ -41,10 +41,7 @@ impl TokenSymbolTable {
     /// Remove the unique symbol corresponding to an index in the symbol table
     pub fn remove_index(&mut self, idx: &u32) -> Option<String> {
         let symbol = self.find_index(idx).cloned();
-        symbol.and_then(|symbol|
-            self.string_to_index
-                .remove(&symbol)
-                .map(|_| symbol))
+        symbol.and_then(|symbol| self.string_to_index.remove(&symbol).map(|_| symbol))
     }
 }
 
@@ -82,11 +79,9 @@ impl ResolvedSymbolTable {
     /// Remove a symbol and all its linked indices from the symbol table
     pub fn remove_symbol(&mut self, symbol: &str) -> Vec<u32> {
         let indices = self.find_symbol(symbol);
-        indices.into_iter()
-            .flat_map(|idx|
-                self.index_to_resolved
-                    .remove(&idx)
-                    .map(|_| idx))
+        indices
+            .into_iter()
+            .flat_map(|idx| self.index_to_resolved.remove(&idx).map(|_| idx))
             .collect()
     }
 

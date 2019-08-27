@@ -1,10 +1,12 @@
-use constants::*;
-use data::EntityValue;
-use errors::*;
-use failure::ResultExt;
+use crate::constants::*;
+use crate::data::EntityValue;
+use crate::errors::*;
+use crate::symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
+use crate::utils::{check_threshold, whitespace_tokenizer};
+use failure::{format_err, ResultExt};
 use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
-use rmps::{from_read, Serializer};
-use serde::Serialize;
+use rmp_serde::{from_read, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -12,8 +14,6 @@ use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
-use utils::{check_threshold, whitespace_tokenizer};
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -75,6 +75,8 @@ pub struct PossibleMatch {
     first_token_in_resolution: usize,
     last_token_in_resolution: usize,
     rank: u32,
+    // List of tuples (resolved_value_idx, rank)
+    alternative_resolved_values: Vec<(u32, u32)>,
 }
 
 impl PossibleMatch {
@@ -116,11 +118,17 @@ impl PartialOrd for PossibleMatch {
 /// composing the raw value in the input query.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedValue {
-    pub resolved_value: String,
+    pub resolved_value: ResolvedValue,
+    pub alternatives: Vec<ResolvedValue>,
     // character-level
     pub range: Range<usize>,
-    pub raw_value: String,
     pub matched_value: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ResolvedValue {
+    pub resolved: String,
+    pub raw_value: String,
 }
 
 impl Ord for ParsedValue {
@@ -137,9 +145,9 @@ impl Ord for ParsedValue {
 
 impl PartialOrd for ParsedValue {
     fn partial_cmp(&self, other: &ParsedValue) -> Option<Ordering> {
-        if self.range.end < other.range.start {
+        if self.range.end <= other.range.start {
             Some(Ordering::Less)
-        } else if self.range.start > other.range.end {
+        } else if self.range.start >= other.range.end {
             Some(Ordering::Greater)
         } else {
             None
@@ -270,9 +278,11 @@ impl Parser {
     }
 
     /// Parse the input string `input` and output a vec of `ParsedValue`.
-    pub fn run(&self, input: &str) -> Result<Vec<ParsedValue>> {
+    /// The `max_alternatives` defines how many alternative resolved values must be returned in
+    /// addition to the top one.
+    pub fn run(&self, input: &str, max_alternatives: usize) -> Result<Vec<ParsedValue>> {
         let matches_heap = self
-            .find_possible_matches(input, self.threshold)
+            .find_possible_matches(input, self.threshold, max_alternatives)
             .with_context(|_| format_err!("Error when finding possible matches"))?;
         Ok(self
             .parse_input(input, matches_heap)
@@ -348,8 +358,8 @@ impl Parser {
             // we inject new values from rank 0 to n_new_values - 1
             true => 0,
             // we inject new values from the current last rank onwards
-            false => self.resolved_value_to_tokens.len(),
-        } as u32;
+            false => self.resolved_value_to_tokens.len() as u32,
+        };
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
             self.add_value(entity_value.clone(), new_start_rank + rank as u32);
@@ -435,37 +445,41 @@ impl Parser {
         })
     }
 
-    /// get the underlying matched value associated to a `PossibleMatch`
-    fn get_matched_value(&self, possible_match: &PossibleMatch) -> Result<String> {
-        Ok(self
-            .resolved_value_to_tokens
-            .get(&possible_match.resolved_value)
+    /// get the resolved values from a possible match
+    fn get_resolved_value(&self, resolved_value_index: u32) -> Result<ResolvedValue> {
+        let resolved = self
+            .resolved_symbol_table
+            .find_index(&resolved_value_index)
+            .cloned()
             .ok_or_else(|| {
-                format_err!(
-                    "Missing key for resolved value {}",
-                    possible_match.resolved_value
-                )
-            })?
+                format_err!("Missing key for resolved value {}", resolved_value_index)
+            })?;
+        let matched_value = self
+            .resolved_value_to_tokens
+            .get(&resolved_value_index)
+            .ok_or_else(|| format_err!("Missing key for resolved value {}", resolved_value_index))?
             .1
             .iter()
             .flat_map(|token_idx| self.tokens_symbol_table.find_index(token_idx))
             .map(|token_string| token_string.as_str())
             .collect::<Vec<_>>()
-            .join(" "))
+            .join(" ");
+        Ok(ResolvedValue {
+            resolved,
+            raw_value: matched_value,
+        })
     }
 
-    /// Find all possible matches in a string.
-    /// Returns a hashmap, indexed by resolved values. The corresponding value is a vec of tuples
-    /// each tuple is a possible match for the resolved value, and is made of
-    /// (range of match, number of skips, index of last matched token in the resolved value)
+    /// Find and return all possible matches in a string, ordered by the order defined on
+    /// `PossibleMatch`, from max to min.
     fn find_possible_matches(
         &self,
         input: &str,
         threshold: f32,
+        max_alternatives: usize,
     ) -> Result<BinaryHeap<PossibleMatch>> {
-        let mut possible_matches: HashMap<u32, PossibleMatch> =
-            HashMap::with_capacity_and_hasher(1000, Default::default());
-        let mut matches_heap: BinaryHeap<PossibleMatch> = BinaryHeap::default();
+        let mut partial_matches: HashMap<u32, PossibleMatch> = HashMap::default();
+        let mut final_matches: Vec<PossibleMatch> = vec![];
         let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
         for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
             if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
@@ -480,8 +494,8 @@ impl Parser {
                             *res_val,
                             token_idx,
                             range.clone(),
-                            &mut possible_matches,
-                            &mut matches_heap,
+                            &mut partial_matches,
+                            &mut final_matches,
                             &mut skipped_tokens,
                             threshold,
                         )?;
@@ -497,8 +511,8 @@ impl Parser {
                                 *res_val,
                                 token_idx,
                                 range.clone(),
-                                &mut possible_matches,
-                                &mut matches_heap,
+                                &mut partial_matches,
+                                &mut final_matches,
                                 &mut skipped_tokens,
                                 1.0,
                             )?;
@@ -508,7 +522,7 @@ impl Parser {
                     // Iterate over current possible matches containing the stop word and
                     // try to grow them (but do not initiate a new possible match)
                     // Threshold depends on whether the res_val is an edge case or not
-                    for (res_val, mut possible_match) in &mut possible_matches {
+                    for (res_val, mut possible_match) in &mut partial_matches {
                         if !res_vals_from_token.contains(res_val)
                             || self.edge_cases.contains(res_val)
                         {
@@ -520,7 +534,7 @@ impl Parser {
                             *value,
                             range.clone(),
                             threshold,
-                            &mut matches_heap,
+                            &mut final_matches,
                         )?;
                     }
                 }
@@ -528,7 +542,7 @@ impl Parser {
         }
 
         // Add to the heap the possible matches that remain
-        Ok(possible_matches
+        let final_matches = partial_matches
             .values()
             .filter(|possible_match| {
                 if self.edge_cases.contains(&possible_match.resolved_value) {
@@ -537,10 +551,13 @@ impl Parser {
                     possible_match.check_threshold(threshold)
                 }
             })
-            .fold(matches_heap, |mut acc, possible_match| {
+            .fold(final_matches, |mut acc, possible_match| {
                 acc.push(possible_match.clone());
                 acc
-            }))
+            });
+
+        // Group possible matches that matched the same underlying range
+        Ok(group_matches(final_matches, max_alternatives))
     }
 
     fn update_or_insert_possible_match(
@@ -549,12 +566,12 @@ impl Parser {
         res_val: u32,
         token_idx: usize,
         range: Range<usize>,
-        possible_matches: &mut HashMap<u32, PossibleMatch>,
-        mut matches_heap: &mut BinaryHeap<PossibleMatch>,
+        partial_matches: &mut HashMap<u32, PossibleMatch>,
+        mut final_matches: &mut Vec<PossibleMatch>,
         skipped_tokens: &mut HashMap<usize, (Range<usize>, u32)>,
         threshold: f32,
     ) -> Result<()> {
-        match possible_matches.entry(res_val) {
+        match partial_matches.entry(res_val) {
             Entry::Occupied(mut entry) => {
                 self.update_previous_match(
                     entry.get_mut(),
@@ -562,7 +579,7 @@ impl Parser {
                     value,
                     range,
                     threshold,
-                    &mut matches_heap,
+                    &mut final_matches,
                 )?;
             }
             Entry::Vacant(entry) => {
@@ -589,7 +606,7 @@ impl Parser {
         value: u32,
         range: Range<usize>,
         threshold: f32,
-        ref mut matches_heap: &mut BinaryHeap<PossibleMatch>,
+        ref mut final_matches: &mut Vec<PossibleMatch>,
     ) -> Result<()> {
         let (rank, otokens) =
             self.get_tokens_from_resolved_value(&possible_match.resolved_value)?;
@@ -616,7 +633,7 @@ impl Parser {
         // We start a new PossibleMatch.
 
         if possible_match.check_threshold(threshold) {
-            matches_heap.push(possible_match.clone());
+            final_matches.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
         let last_token_in_resolution =
@@ -634,6 +651,7 @@ impl Parser {
             last_token_in_resolution,
             n_consumed_tokens: 1,
             rank: *rank,
+            alternative_resolved_values: vec![],
         };
         Ok(())
     }
@@ -665,6 +683,7 @@ impl Parser {
             n_consumed_tokens: 1,
             raw_value_length: otokens.len() as u32,
             rank: *rank,
+            alternative_resolved_values: vec![],
         };
         let mut n_skips = last_token_in_resolution as u32;
         // Backtrack to check if we left out from skipped words at the beginning
@@ -731,6 +750,7 @@ impl Parser {
                 last_token_in_resolution: 0, // we are not going to need this one
                 first_token_in_resolution: 0, // we are not going to need this one
                 rank: possible_match.rank,
+                alternative_resolved_values: possible_match.alternative_resolved_values,
             }),
             _ => None,
         }
@@ -781,22 +801,17 @@ impl Parser {
 
             parsing.push(ParsedValue {
                 range: possible_match.range.clone(),
-                raw_value: input
+                matched_value: input
                     .chars()
                     .skip(possible_match.range.start)
                     .take(possible_match.range.len())
                     .collect(),
-                resolved_value: self
-                    .resolved_symbol_table
-                    .find_index(&possible_match.resolved_value)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format_err!(
-                            "Missing key for resolved value {}",
-                            possible_match.resolved_value
-                        )
-                    })?,
-                matched_value: self.get_matched_value(&possible_match)?,
+                resolved_value: self.get_resolved_value(possible_match.resolved_value)?,
+                alternatives: possible_match
+                    .alternative_resolved_values
+                    .iter()
+                    .map(|(idx, _)| Ok(self.get_resolved_value(*idx)?))
+                    .collect::<Result<Vec<_>>>()?,
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -818,21 +833,55 @@ impl Parser {
     }
 }
 
+fn group_matches(
+    final_matches: Vec<PossibleMatch>,
+    max_alternatives: usize,
+) -> BinaryHeap<PossibleMatch> {
+    final_matches
+        .iter()
+        .fold(
+            HashMap::<Range<usize>, BinaryHeap<&PossibleMatch>>::default(),
+            |mut grouped_matches, final_match| {
+                grouped_matches
+                    .entry(final_match.range.clone())
+                    .and_modify(|entry| entry.push(final_match))
+                    .or_insert_with(|| {
+                        let mut alternatives = BinaryHeap::new();
+                        alternatives.push(final_match);
+                        alternatives
+                    });
+                grouped_matches
+            },
+        )
+        .into_iter()
+        .map(|(_, mut matches)| {
+            let mut best_match = matches.pop().unwrap().clone();
+            while !matches.is_empty()
+                && best_match.alternative_resolved_values.len() < max_alternatives
+            {
+                let m = matches.pop().unwrap();
+                // Only add alternative with the same matching ratio
+                if m.raw_value_length > best_match.raw_value_length {
+                    break;
+                }
+                best_match
+                    .alternative_resolved_values
+                    .push((m.resolved_value, m.rank));
+            }
+            best_match
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    extern crate mio_httpc;
-    extern crate tempfile;
-
-    use self::mio_httpc::CallBuilder;
-    use self::tempfile::tempdir;
-    #[allow(unused_imports)]
     use super::*;
-    #[allow(unused_imports)]
-    use data::EntityValue;
-    use data::Gazetteer;
+    use crate::data::EntityValue;
+    use crate::data::Gazetteer;
+    use crate::gazetteer;
+    use crate::parser_builder::ParserBuilder;
     use failure::ResultExt;
-    use parser_builder::ParserBuilder;
-    use std::time::Instant;
+    use tempfile::tempdir;
 
     fn get_license_info() -> LicenseInfo {
         let license_content = "Some content here".to_string();
@@ -847,19 +896,11 @@ mod tests {
     #[test]
     fn test_serialization_deserialization() {
         let tdir = tempdir().unwrap();
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Flying Stones".to_string(),
-            raw_value: "the flying stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the stones".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("the flying stones", "The Flying Stones"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("the stones", "The Rolling Stones"),
+        );
 
         let license_info = get_license_info();
 
@@ -908,24 +949,12 @@ mod tests {
 
     #[test]
     fn test_stop_words_and_edge_cases() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Flying Stones".to_string(),
-            raw_value: "the flying stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Stones Rolling".to_string(),
-            raw_value: "the stones rolling".to_string(),
-        });
-
-        gazetteer.add(EntityValue {
-            resolved_value: "The Stones".to_string(),
-            raw_value: "the stones".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("the flying stones", "The Flying Stones"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("the stones rolling", "The Stones Rolling"),
+            ("the stones", "The Stones"),
+        );
 
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -946,13 +975,19 @@ mod tests {
 
         // Value starting with a stop word
         parser.set_threshold(0.6);
-        let parsed = parser.run("je veux écouter les the rolling").unwrap();
+        let parsed = parser.run("je veux écouter les the rolling", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the rolling".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                matched_value: "the rolling".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string()
+                },
+                alternatives: vec![ResolvedValue {
+                    resolved: "The Stones Rolling".to_string(),
+                    raw_value: "the stones rolling".to_string()
+                }],
                 range: 20..31,
             }]
         );
@@ -960,14 +995,17 @@ mod tests {
         // Value starting with a stop word and ending with one
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("je veux écouter les the rolling stones")
+            .run("je veux écouter les the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
                 matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..38,
             }]
         );
@@ -975,60 +1013,72 @@ mod tests {
         // Value starting with two stop words
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("je veux écouter les the stones rolling")
+            .run("je veux écouter les the stones rolling", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the stones rolling".to_string(),
-                resolved_value: "The Stones Rolling".to_string(),
                 matched_value: "the stones rolling".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Stones Rolling".to_string(),
+                    raw_value: "the stones rolling".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..38,
             }]
         );
 
         // Edge case
         parser.set_threshold(1.0);
-        let parsed = parser.run("je veux écouter les the stones").unwrap();
+        let parsed = parser.run("je veux écouter les the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the stones".to_string(),
-                resolved_value: "The Stones".to_string(),
                 matched_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Stones".to_string(),
+                    raw_value: "the stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..30,
             }]
         );
 
         // Edge case should not match if not present in full
         parser.set_threshold(0.5);
-        let parsed = parser.run("je veux écouter les the").unwrap();
+        let parsed = parser.run("je veux écouter les the", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
         // Sentence containing an additional stop word which is absent from the gazetteer
         let parsed = parser
-            .run("hello I want to listen to the rolling stones")
+            .run("hello I want to listen to the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
                 matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 26..44,
             }]
         );
 
         // Multiple stop words at the beginning of a value
         let parsed = parser
-            .run("hello I want to listen to the the rolling stones")
+            .run("hello I want to listen to the the rolling stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
                 matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 30..48,
             }]
         );
@@ -1036,23 +1086,12 @@ mod tests {
 
     #[test]
     fn test_parser_base() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Flying Stones".to_string(),
-            raw_value: "the flying stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Blink-182".to_string(),
-            raw_value: "blink one eight two".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Je Suis Animal".to_string(),
-            raw_value: "je suis animal".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("the flying stones", "The Flying Stones"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("blink one eight two", "Blink-182"),
+            ("je suis animal", "Je Suis Animal"),
+        );
 
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
@@ -1060,84 +1099,98 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let mut parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    matched_value: "je".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        raw_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
-                    raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    matched_value: "rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        raw_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
         );
 
-        parsed = parser.run("je veux ecouter les \t rolling stones").unwrap();
+        parsed = parser
+            .run("je veux ecouter les \t rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    matched_value: "je".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        raw_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
-                    raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    matched_value: "rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        raw_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 22..36,
                 },
             ]
         );
 
         parsed = parser
-            .run("i want to listen to rolling stones and blink eight")
+            .run("i want to listen to rolling stones and blink eight", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    matched_value: "rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        raw_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
                 ParsedValue {
-                    raw_value: "blink eight".to_string(),
-                    resolved_value: "Blink-182".to_string(),
-                    matched_value: "blink one eight two".to_string(),
+                    matched_value: "blink eight".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Blink-182".to_string(),
+                        raw_value: "blink one eight two".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 39..50,
                 },
             ]
         );
 
-        parsed = parser.run("joue moi quelque chose").unwrap();
+        parsed = parser.run("joue moi quelque chose", 5).unwrap();
         assert_eq!(parsed, vec![]);
     }
 
     #[test]
     fn test_parser_multiple_raw_values() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "Blink-182".to_string(),
-            raw_value: "blink one eight two".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Blink-182".to_string(),
-            raw_value: "blink 182".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Blink-182".to_string(),
-            raw_value: "blink".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("blink one eight two", "Blink-182"),
+            ("blink 182", "Blink-182"),
+            ("blink", "Blink-182"),
+        );
 
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
@@ -1145,37 +1198,46 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser.run("let's listen to blink 182").unwrap();
+        let mut parsed = parser.run("let's listen to blink 182", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "blink 182".to_string(),
-                resolved_value: "Blink-182".to_string(),
                 matched_value: "blink 182".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    raw_value: "blink 182".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..25,
             }]
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to blink").unwrap();
+        parsed = parser.run("let's listen to blink", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "blink".to_string(),
-                resolved_value: "Blink-182".to_string(),
                 matched_value: "blink".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    raw_value: "blink".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..21,
             }]
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to one eight two").unwrap();
+        parsed = parser.run("let's listen to one eight two", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "one eight two".to_string(),
-                resolved_value: "Blink-182".to_string(),
-                matched_value: "blink one eight two".to_string(),
+                matched_value: "one eight two".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Blink-182".to_string(),
+                    raw_value: "blink one eight two".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..29,
             }]
         );
@@ -1183,27 +1245,14 @@ mod tests {
 
     #[test]
     fn test_parser_with_ranking() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "Jacques Brel".to_string(),
-            raw_value: "jacques brel".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Flying Stones".to_string(),
-            raw_value: "the flying stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Daniel Brel".to_string(),
-            raw_value: "daniel brel".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Jacques".to_string(),
-            raw_value: "jacques".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("jacques brel", "Jacques Brel"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("the flying stones", "The Flying Stones"),
+            ("daniel brel", "Daniel Brel"),
+            ("jacques", "Jacques"),
+        );
+
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
@@ -1211,58 +1260,49 @@ mod tests {
             .unwrap();
 
         // When there is a tie in terms of number of token matched, match the most popular choice
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                matched_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                }],
                 range: 16..26,
             }]
         );
 
-        let parsed = parser.run("je veux écouter brel").unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "brel".to_string(),
-                resolved_value: "Jacques Brel".to_string(),
-                matched_value: "jacques brel".to_string(),
-                range: 16..20,
-            }]
-        );
-
         // Resolve to the value with more words matching regardless of popularity
-        let parsed = parser.run("je veux écouter the flying stones").unwrap();
+        let parsed = parser.run("je veux écouter the flying stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
                 matched_value: "the flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..33,
             }]
         );
 
-        let parsed = parser.run("je veux écouter daniel brel").unwrap();
+        // Resolve to the value with the best matching ratio
+        let parsed = parser.run("je veux écouter jacques", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "daniel brel".to_string(),
-                resolved_value: "Daniel Brel".to_string(),
-                matched_value: "daniel brel".to_string(),
-                range: 16..27,
-            }]
-        );
-
-        let parsed = parser.run("je veux écouter jacques").unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "jacques".to_string(),
-                resolved_value: "Jacques".to_string(),
                 matched_value: "jacques".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Jacques".to_string(),
+                    raw_value: "jacques".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..23,
             }]
         );
@@ -1270,15 +1310,10 @@ mod tests {
 
     #[test]
     fn test_preprend_values() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "Jacques Brel".to_string(),
-            raw_value: "jacques brel".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("jacques brel", "Jacques Brel"),
+            ("the rolling stones", "The Rolling Stones"),
+        );
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
@@ -1287,13 +1322,16 @@ mod tests {
 
         let input = "je veux écouter brel";
 
-        let parsed = parser.run(input).unwrap();
+        let parsed = parser.run(input, 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "brel".to_string(),
-                resolved_value: "Jacques Brel".to_string(),
-                matched_value: "jacques brel".to_string(),
+                matched_value: "brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Jacques Brel".to_string(),
+                    raw_value: "jacques brel".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..20,
             }]
         );
@@ -1311,13 +1349,25 @@ mod tests {
 
         parser.prepend_values(values_to_prepend);
 
-        let parsed = parser.run(input).unwrap();
+        let parsed = parser.run(input, 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "brel".to_string(),
-                resolved_value: "Daniel Brel".to_string(),
-                matched_value: "daniel brel".to_string(),
+                matched_value: "brel".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Daniel Brel".to_string(),
+                    raw_value: "daniel brel".to_string(),
+                },
+                alternatives: vec![
+                    ResolvedValue {
+                        resolved: "Eric Brel".to_string(),
+                        raw_value: "eric brel".to_string(),
+                    },
+                    ResolvedValue {
+                        resolved: "Jacques Brel".to_string(),
+                        raw_value: "jacques brel".to_string(),
+                    }
+                ],
                 range: 16..20,
             }]
         );
@@ -1325,12 +1375,7 @@ mod tests {
 
     #[test]
     fn test_parser_with_restart() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
@@ -1338,85 +1383,68 @@ mod tests {
             .unwrap();
 
         let parsed = parser
-            .run("the music I want to listen to is rolling on stones")
+            .run("the music I want to listen to is rolling on stones", 5)
             .unwrap();
         assert_eq!(parsed, vec![]);
     }
 
     #[test]
     fn test_parser_with_unicode_whitespace() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "Quand est-ce ?".to_string(),
-            raw_value: "quand est -ce".to_string(),
-        });
+        let gazetteer = gazetteer!(("quand est -ce", "Quand est-ce ?"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
             .unwrap();
 
-        let parsed = parser.run("non quand est survivre").unwrap();
+        let parsed = parser.run("non quand est survivre", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "Quand est-ce ?".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Quand est-ce ?".to_string(),
+                    raw_value: "quand est -ce".to_string(),
+                },
                 range: 4..13,
-                raw_value: "quand est".to_string(),
-                matched_value: "quand est -ce".to_string(),
+                matched_value: "quand est".to_string(),
+                alternatives: vec![],
             }]
         )
     }
 
     #[test]
     fn test_parser_with_mixed_ordered_entity() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
             .unwrap();
 
-        let parsed = parser.run("rolling the stones").unwrap();
+        let parsed = parser.run("rolling the stones", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                resolved_value: "The Rolling Stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
                 range: 8..18,
-                raw_value: "the stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                matched_value: "the stones".to_string(),
+                alternatives: vec![],
             }]
         );
     }
 
     #[test]
     fn test_parser_with_threshold() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Flying Stones".to_string(),
-            raw_value: "the flying stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Blink-182".to_string(),
-            raw_value: "blink one eight two".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Je Suis Animal".to_string(),
-            raw_value: "je suis animal".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Les Enfoirés".to_string(),
-            raw_value: "les enfoirés".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("the flying stones", "The Flying Stones"),
+            ("the rolling stones", "The Rolling Stones"),
+            ("blink one eight two", "Blink-182"),
+            ("je suis animal", "Je Suis Animal"),
+            ("les enfoirés", "Les Enfoirés"),
+        );
 
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -1424,59 +1452,83 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    resolved_value: "Les Enfoirés".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Les Enfoirés".to_string(),
+                        raw_value: "les enfoirés".to_string(),
+                    },
                     range: 16..19,
-                    raw_value: "les".to_string(),
-                    matched_value: "les enfoirés".to_string(),
+                    matched_value: "les".to_string(),
+                    alternatives: vec![],
                 },
                 ParsedValue {
-                    raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    matched_value: "rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        raw_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
         );
 
         parser.set_threshold(0.3);
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![
                 ParsedValue {
-                    raw_value: "je".to_string(),
-                    resolved_value: "Je Suis Animal".to_string(),
-                    matched_value: "je suis animal".to_string(),
+                    matched_value: "je".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Je Suis Animal".to_string(),
+                        raw_value: "je suis animal".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 0..2,
                 },
                 ParsedValue {
-                    resolved_value: "Les Enfoirés".to_string(),
-                    matched_value: "les enfoirés".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "Les Enfoirés".to_string(),
+                        raw_value: "les enfoirés".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 16..19,
-                    raw_value: "les".to_string(),
+                    matched_value: "les".to_string(),
                 },
                 ParsedValue {
-                    raw_value: "rolling stones".to_string(),
-                    resolved_value: "The Rolling Stones".to_string(),
-                    matched_value: "the rolling stones".to_string(),
+                    matched_value: "rolling stones".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "The Rolling Stones".to_string(),
+                        raw_value: "the rolling stones".to_string(),
+                    },
+                    alternatives: vec![],
                     range: 20..34,
                 },
             ]
         );
 
         parser.set_threshold(0.6);
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser
+            .run("je veux écouter les rolling stones", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                matched_value: "rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..34,
             }]
         );
@@ -1484,31 +1536,29 @@ mod tests {
 
     #[test]
     fn test_repeated_words() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
             .gazetteer(gazetteer)
             .build()
             .unwrap();
 
-        let parsed = parser.run("the the the").unwrap();
+        let parsed = parser.run("the the the", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
         parser.set_threshold(1.0);
         let parsed = parser
-            .run("the the the rolling stones stones stones stones")
+            .run("the the the rolling stones stones stones stones", 5)
             .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
                 matched_value: "the rolling stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 8..26,
             }]
         );
@@ -1516,12 +1566,7 @@ mod tests {
 
     #[test]
     fn test_injection_ranking() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
@@ -1537,53 +1582,71 @@ mod tests {
         parser
             .inject_new_values(new_values.clone(), false, false)
             .unwrap();
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
 
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                matched_value: "flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..33,
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
 
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
+                matched_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                },
+                alternatives: vec![ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                }],
                 range: 16..26,
             }]
         );
 
         // Test with preprend set to true
-        parser.inject_new_values(new_values, true, false).unwrap();
+        parser.inject_new_values(new_values, true, true).unwrap();
 
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
 
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "flying stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                matched_value: "flying stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![],
                 range: 20..33,
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones").unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
 
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "the stones".to_string(),
-                resolved_value: "The Flying Stones".to_string(),
-                matched_value: "the flying stones".to_string(),
+                matched_value: "the stones".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Flying Stones".to_string(),
+                    raw_value: "the flying stones".to_string(),
+                },
+                alternatives: vec![ResolvedValue {
+                    resolved: "The Rolling Stones".to_string(),
+                    raw_value: "the rolling stones".to_string(),
+                }],
                 range: 16..26,
             }]
         );
@@ -1591,12 +1654,7 @@ mod tests {
 
     #[test]
     fn test_injection_from_vanilla() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
             .gazetteer(gazetteer)
@@ -1625,16 +1683,21 @@ mod tests {
             .unwrap();
         parser.inject_new_values(new_values_2, true, true).unwrap();
 
-        let parsed = parser.run("je veux écouter les flying stones").unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
         assert_eq!(parsed, vec![]);
 
-        let parsed = parser.run("je veux écouter queens the stone age").unwrap();
+        let parsed = parser
+            .run("je veux écouter queens the stone age", 5)
+            .unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "queens the stone age".to_string(),
-                resolved_value: "Queens Of The Stone Age".to_string(),
-                matched_value: "queens of the stone age".to_string(),
+                matched_value: "queens the stone age".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Queens Of The Stone Age".to_string(),
+                    raw_value: "queens of the stone age".to_string(),
+                },
+                alternatives: vec![],
                 range: 16..36,
             }]
         );
@@ -1657,16 +1720,10 @@ mod tests {
 
     #[test]
     fn test_injection_stop_words() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "The Rolling Stones".to_string(),
-            raw_value: "the rolling stones".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Stones".to_string(),
-            raw_value: "the stones".to_string(),
-        });
-
+        let gazetteer = gazetteer!(
+            ("the rolling stones", "The Rolling Stones"),
+            ("the stones", "The Stones"),
+        );
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.0)
             .gazetteer(gazetteer.clone())
@@ -1721,31 +1778,84 @@ mod tests {
 
     #[test]
     fn test_match_longest_substring() {
-        let mut gazetteer = Gazetteer::default();
-        gazetteer.add(EntityValue {
-            resolved_value: "Black And White".to_string(),
-            raw_value: "black and white".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "Album".to_string(),
-            raw_value: "album".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "The Black and White Album".to_string(),
-            raw_value: "the black and white album".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "1 2 3 4".to_string(),
-            raw_value: "one two three four".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "3 4 5 6".to_string(),
-            raw_value: "three four five six".to_string(),
-        });
-        gazetteer.add(EntityValue {
-            resolved_value: "6 7".to_string(),
-            raw_value: "six seven".to_string(),
-        });
+        let gazetteer = gazetteer!(
+            ("black and white", "Black And White"),
+            ("album", "Album"),
+            ("the black and white album", "The Black and White Album"),
+            ("one two three four", "1 2 3 4"),
+            ("three four five", "3 4 5"),
+            ("five six", "5 6"),
+        );
+
+        let parser = ParserBuilder::default()
+            .minimum_tokens_ratio(0.7)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
+
+        let parsed = parser
+            .run("je veux écouter le black and white album", 5)
+            .unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                matched_value: "black and white album".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "The Black and White Album".to_string(),
+                    raw_value: "the black and white album".to_string(),
+                },
+                alternatives: vec![],
+                range: 19..40,
+            }]
+        );
+
+        let parsed = parser.run("zero one two three four five", 5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![ParsedValue {
+                matched_value: "one two three four".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "1 2 3 4".to_string(),
+                    raw_value: "one two three four".to_string(),
+                },
+                alternatives: vec![],
+                range: 5..23,
+            },]
+        );
+
+        let parsed = parser.run("zero one two three four five six", 5).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedValue {
+                    matched_value: "one two three four".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "1 2 3 4".to_string(),
+                        raw_value: "one two three four".to_string(),
+                    },
+                    alternatives: vec![],
+                    range: 5..23,
+                },
+                ParsedValue {
+                    matched_value: "five six".to_string(),
+                    resolved_value: ResolvedValue {
+                        resolved: "5 6".to_string(),
+                        raw_value: "five six".to_string(),
+                    },
+                    alternatives: vec![],
+                    range: 24..32,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_alternative_matches() {
+        let gazetteer = gazetteer!(
+            ("space invader", "Space Invader"),
+            ("invader on mars", "Invader on Mars"),
+            ("invader attack", "Invader Attack"),
+        );
 
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -1753,232 +1863,60 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser
-            .run("je veux écouter le black and white album")
-            .unwrap();
+        let parsed = parser.run("I want to play to invader", 5).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "black and white album".to_string(),
-                resolved_value: "The Black and White Album".to_string(),
-                matched_value: "the black and white album".to_string(),
-                range: 19..40,
+                matched_value: "invader".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Space Invader".to_string(),
+                    raw_value: "space invader".to_string(),
+                },
+                alternatives: vec![ResolvedValue {
+                    resolved: "Invader Attack".to_string(),
+                    raw_value: "invader attack".to_string(),
+                }],
+                range: 18..25,
             }]
-        );
-
-        let parsed = parser.run("one two three four").unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "one two three four".to_string(),
-                resolved_value: "1 2 3 4".to_string(),
-                matched_value: "one two three four".to_string(),
-                range: 0..18,
-            }]
-        );
-
-        // This test is ambiguous and there may be several acceptable answers...
-        let parsed = parser.run("zero one two three four five six").unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ParsedValue {
-                    raw_value: "one two three four".to_string(),
-                    resolved_value: "1 2 3 4".to_string(),
-                    matched_value: "one two three four".to_string(),
-                    range: 5..23,
-                },
-                ParsedValue {
-                    raw_value: "five six".to_string(),
-                    resolved_value: "3 4 5 6".to_string(),
-                    matched_value: "three four five six".to_string(),
-                    range: 24..32,
-                },
-            ]
-        );
-
-        let parsed = parser
-            .run("zero one two three four five six seven")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ParsedValue {
-                    raw_value: "one two three four".to_string(),
-                    resolved_value: "1 2 3 4".to_string(),
-                    matched_value: "one two three four".to_string(),
-                    range: 5..23,
-                },
-                ParsedValue {
-                    raw_value: "six seven".to_string(),
-                    resolved_value: "6 7".to_string(),
-                    matched_value: "six seven".to_string(),
-                    range: 29..38,
-                },
-            ]
         );
     }
 
     #[test]
-    #[ignore]
-    fn real_world_gazetteer_parser() {
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        let gaz = Gazetteer { data };
+    fn test_max_alternative_matches() {
+        let gazetteer = gazetteer!(
+            ("space invader", "Space Invader"),
+            ("invader war", "Invader War"),
+            ("invader attack", "Invader Attack"),
+            ("invader life", "Invader Life"),
+        );
 
-        let n_stop_words = 50;
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.6)
-            .gazetteer(gaz)
-            .n_stop_words(n_stop_words)
+        let parser = ParserBuilder::default()
+            .minimum_tokens_ratio(0.5)
+            .gazetteer(gazetteer)
             .build()
             .unwrap();
 
-        let parsed = parser.run("je veux écouter les rolling stones").unwrap();
+        let parsed = parser.run("I want to play to invader", 2).unwrap();
         assert_eq!(
             parsed,
             vec![ParsedValue {
-                raw_value: "rolling stones".to_string(),
-                resolved_value: "The Rolling Stones".to_string(),
-                matched_value: "the rolling stones".to_string(),
-                range: 20..34,
-            }]
-        );
-
-        parser.set_threshold(0.5);
-        let parsed = parser.run("je veux écouter bowie").unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "bowie".to_string(),
-                resolved_value: "David Bowie".to_string(),
-                matched_value: "david bowie".to_string(),
-                range: 16..21,
-            }]
-        );
-
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(60000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        let gaz = Gazetteer { data };
-
-        let n_stop_words = 50;
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.6)
-            .gazetteer(gaz)
-            .n_stop_words(n_stop_words)
-            .build()
-            .unwrap();
-
-        let parsed = parser
-            .run("je veux écouter le black and white album")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "black and white album".to_string(),
-                resolved_value: "The Black and White Album".to_string(),
-                matched_value: "black and white album".to_string(),
-                range: 19..40,
-            }]
-        );
-
-        let parsed = parser
-            .run("je veux écouter dark side of the moon")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "dark side of the moon".to_string(),
-                resolved_value: "Dark Side of the Moon".to_string(),
-                matched_value: "dark side of the moon".to_string(),
-                range: 16..37,
-            }]
-        );
-
-        parser.set_threshold(0.5);
-        let parsed = parser
-            .run("je veux écouter dark side of the moon")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ParsedValue {
-                    raw_value: "je veux".to_string(),
-                    resolved_value: "Je veux du bonheur".to_string(),
-                    matched_value: "je veux du bonheur".to_string(),
-                    range: 0..7,
+                matched_value: "invader".to_string(),
+                resolved_value: ResolvedValue {
+                    resolved: "Space Invader".to_string(),
+                    raw_value: "space invader".to_string(),
                 },
-                ParsedValue {
-                    raw_value: "dark side of the moon".to_string(),
-                    resolved_value: "Dark Side of the Moon".to_string(),
-                    matched_value: "dark side of the moon".to_string(),
-                    range: 16..37,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn test_real_word_injection() {
-        // Real-world artist gazetteer
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/artist_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let data: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        let album_gaz = Gazetteer { data };
-
-        let mut parser_for_test = ParserBuilder::default()
-            .minimum_tokens_ratio(0.6)
-            .gazetteer(album_gaz.clone())
-            .n_stop_words(50)
-            .build()
-            .unwrap();
-
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.6)
-            .gazetteer(album_gaz)
-            .n_stop_words(50)
-            .build()
-            .unwrap();
-
-        // Get 10k values from the album gazetter to inject in the album parser
-        let (_, body) = CallBuilder::get().max_response(20000000).timeout_ms(100000).url("https://s3.amazonaws.com/snips/nlu-lm/test/gazetteer-entity-parser/album_gazetteer_formatted.json").unwrap().exec().unwrap();
-        let mut new_values: Vec<EntityValue> = serde_json::from_reader(&*body).unwrap();
-        new_values.truncate(10000);
-
-        // Test injection
-        parser_for_test.set_threshold(0.7);
-        let parsed = parser_for_test
-            .run("je veux écouter hans knappertsbusch conducts")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "hans knappertsbusch".to_string(),
-                resolved_value: "Hans Knappertsbusch".to_string(),
-                matched_value: "hans knappertsbusch".to_string(),
-                range: 16..35,
+                alternatives: vec![
+                    ResolvedValue {
+                        resolved: "Invader War".to_string(),
+                        raw_value: "invader war".to_string(),
+                    },
+                    ResolvedValue {
+                        resolved: "Invader Attack".to_string(),
+                        raw_value: "invader attack".to_string(),
+                    }
+                ],
+                range: 18..25,
             }]
         );
-        parser_for_test
-            .inject_new_values(new_values.clone(), true, false)
-            .unwrap();
-        parser_for_test.set_threshold(0.7);
-        let parsed = parser_for_test
-            .run("je veux écouter hans knappertsbusch conducts")
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                raw_value: "hans knappertsbusch conducts".to_string(),
-                resolved_value: "Hans Knappertsbusch conducts".to_string(),
-                matched_value: "hans knappertsbusch conducts".to_string(),
-                range: 16..44,
-            }]
-        );
-
-        let now = Instant::now();
-        parser.inject_new_values(new_values, true, false).unwrap();
-        let total_time = now.elapsed().as_secs();
-        assert!(total_time < 10);
     }
 }

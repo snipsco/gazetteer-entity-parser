@@ -1,7 +1,9 @@
-use data::Gazetteer;
-use errors::*;
-use parser::{LicenseInfo, Parser};
-use EntityValue;
+use crate::data::Gazetteer;
+use crate::errors::*;
+use crate::parser::{LicenseInfo, Parser};
+use crate::EntityValue;
+use failure::format_err;
+use serde::{Deserialize, Serialize};
 
 /// Struct exposing a builder allowing to configure and build a Parser
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -105,7 +107,7 @@ impl ParserBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use data::EntityValue;
+    use crate::data::EntityValue;
     use serde_json;
 
     fn get_license_info() -> LicenseInfo {

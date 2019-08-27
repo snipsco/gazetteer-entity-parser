@@ -39,6 +39,13 @@ fn main() {
                 .long("--ratio")
                 .takes_value(true)
                 .help("minimum tokens ratio for the parser"),
+        )
+        .arg(
+            Arg::with_name("opt_max_alternatives")
+                .short("a")
+                .long("--alternatives")
+                .takes_value(true)
+                .help("maximum number of alternative resolved values"),
         );
     let matches = app.clone().get_matches();
 
@@ -49,6 +56,10 @@ fn main() {
     let opt_tokens_ratio = matches
         .value_of("opt_tokens_ratio")
         .map(|ratio_str| ratio_str.to_string().parse::<f32>().unwrap());
+    let max_alternatives = matches
+        .value_of("opt_max_alternatives")
+        .map(|max_str| max_str.to_string().parse::<usize>().unwrap())
+        .unwrap_or(5);
 
     if let Some(parser) = matches
         .value_of("parser")
@@ -84,7 +95,7 @@ fn main() {
             io::stdout().flush().unwrap();
             let mut query = String::new();
             io::stdin().read_line(&mut query).unwrap();
-            let result = parser.run(query.trim()).unwrap();
+            let result = parser.run(query.trim(), max_alternatives).unwrap();
             println!("{:?}", result);
         }
     } else {
