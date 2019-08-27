@@ -118,14 +118,14 @@ fn get_high_redundancy_parser() -> (Parser, RandomStringGenerator) {
 fn parsing_low_redundancy(c: &mut Criterion) {
     let (parser, mut rsg) = get_low_redundancy_parser();
     c.bench_function("Parse random value - low redundancy", move |b| {
-        b.iter(|| parser.run(&rsg.next().unwrap()))
+        b.iter(|| parser.run(&rsg.next().unwrap(), 10))
     });
 }
 
 fn parsing_high_redundancy(c: &mut Criterion) {
     let (parser, mut rsg) = get_high_redundancy_parser();
     c.bench_function("Parse random value - high redundancy", move |b| {
-        b.iter(|| parser.run(&rsg.next().unwrap()))
+        b.iter(|| parser.run(&rsg.next().unwrap(), 10))
     });
 }
 
