@@ -1,18 +1,18 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.8.0] - 2019-08-27
 ### Changed
 - Add `max_alternatives` parameter to the `Parser::run` API [#39](https://github.com/snipsco/gazetteer-entity-parser/pull/39)
 - Add `alternatives` attribute in `ParsedValue` [#39](https://github.com/snipsco/gazetteer-entity-parser/pull/39)
 - Switch `matched_value` and `raw_value` [#39](https://github.com/snipsco/gazetteer-entity-parser/pull/39)
 - Group `resolved_value` and `matched_value` in a dedicated `ResolvedValue` object [#39](https://github.com/snipsco/gazetteer-entity-parser/pull/39)
 
-## [0.7.2]
+## [0.7.2] - 2019-07-19
 ### Fixed
 - Make `LicenseInfo` public [#38](https://github.com/snipsco/gazetteer-entity-parser/pull/38)
 
-## [0.7.1]
+## [0.7.1] - 2019-07-18
 ### Added
 - Add a license file to the gazetteer entity parser [#36](https://github.com/snipsco/gazetteer-entity-parser/pull/36)
 
@@ -34,7 +34,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Clearer `ParserBuilder`'s API 
 
-[Unreleased]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.7.2...HEAD
+[0.8.0]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.7.2...0.8.0
 [0.7.2]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/snipsco/gazetteer-entity-parser/compare/0.6.0...0.7.0
