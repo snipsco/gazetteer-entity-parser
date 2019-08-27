@@ -6,9 +6,9 @@ fn main() {
     let gazetteer = gazetteer!(
         ("king of pop", "Michael Jackson"),
         ("the rolling stones", "The Rolling Stones"),
+        ("the crying stones", "The Crying Stones"),
         ("the fab four", "The Beatles"),
         ("queen of soul", "Aretha Franklin"),
-        ("the red hot chili peppers", "The Red Hot Chili Peppers"),
     );
     let parser = ParserBuilder::default()
         .gazetteer(gazetteer)
@@ -27,7 +27,10 @@ fn main() {
                     resolved: "The Rolling Stones".to_string(),
                     raw_value: "the rolling stones".to_string(),
                 },
-                alternatives: vec![],
+                alternatives: vec![ResolvedValue {
+                    resolved: "The Crying Stones".to_string(),
+                    raw_value: "the crying stones".to_string(),
+                }],
                 range: 25..35,
             },
             ParsedValue {
