@@ -26,10 +26,12 @@ fn main() {
                 resolved_value: ResolvedValue {
                     resolved: "The Rolling Stones".to_string(),
                     raw_value: "the rolling stones".to_string(),
+                    rank: 1,
                 },
                 alternatives: vec![ResolvedValue {
                     resolved: "The Crying Stones".to_string(),
                     raw_value: "the crying stones".to_string(),
+                    rank: 2,
                 }],
                 range: 25..35,
             },
@@ -38,6 +40,7 @@ fn main() {
                 resolved_value: ResolvedValue {
                     resolved: "The Beatles".to_string(),
                     raw_value: "the fab four".to_string(),
+                    rank: 3,
                 },
                 alternatives: vec![],
                 range: 40..48,

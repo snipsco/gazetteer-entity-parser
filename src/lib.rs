@@ -66,7 +66,8 @@
 //!         matched_value: "the stones".to_string(),
 //!         resolved_value: ResolvedValue {
 //!             resolved: "The Rolling Stones".to_string(),
-//!             raw_value: "the rolling stones".to_string()
+//!             raw_value: "the rolling stones".to_string(),
+//!             rank: 0,
 //!         },
 //!         alternatives: vec![],
 //!         range: 20..30,
@@ -81,11 +82,13 @@
 //!         matched_value: "brel".to_string(),
 //!         resolved_value: ResolvedValue {
 //!             resolved: "Jacques Brel".to_string(),
-//!             raw_value: "jacques brel".to_string()
+//!             raw_value: "jacques brel".to_string(),
+//!             rank: 3,
 //!         },
 //!         alternatives: vec![ResolvedValue {
 //!             resolved: "Daniel Brel".to_string(),
-//!             raw_value: "daniel brel".to_string()
+//!             raw_value: "daniel brel".to_string(),
+//!             rank: 4,
 //!         }],
 //!         range: 20..24,
 //!     }]
