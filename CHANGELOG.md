@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+### Added
+- Add the rank of each resolved value in the parsing output [#43](https://github.com/snipsco/gazetteer-entity-parser/pull/43)
+
 ## [0.8.0] - 2019-08-27
 ### Changed
 - Add `max_alternatives` parameter to the `Parser::run` API [#39](https://github.com/snipsco/gazetteer-entity-parser/pull/39)
