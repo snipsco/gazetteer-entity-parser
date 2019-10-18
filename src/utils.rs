@@ -13,7 +13,7 @@ pub struct WhitespaceTokenizer<'a> {
     char_iterator: Peekable<Chars<'a>>,
 }
 
-/// Creates a tokenizer that splits on whitespace and is robust to mutilple and types of whitespaces
+/// Creates a tokenizer that splits on whitespace and is robust to multiple and types of whitespaces
 pub fn whitespace_tokenizer(string: &str) -> WhitespaceTokenizer {
     WhitespaceTokenizer {
         char_iterator: string.chars().peekable(),
@@ -62,7 +62,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn whitespace_tokenizer_works_with_mutiple_spaces() {
+    fn whitespace_tokenizer_works_with_multiple_spaces() {
         let mut tokenizer = whitespace_tokenizer("ceci est un   \t test ");
         assert_eq!(tokenizer.next(), Some((0..4, "ceci".to_string())));
         assert_eq!(tokenizer.next(), Some((5..8, "est".to_string())));
