@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
+use std::iter;
 use std::ops::Range;
 use std::path::Path;
 use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
@@ -151,37 +152,35 @@ impl Parser {
     /// Add a single entity value, along with its rank, to the parser
     /// The ranks of the other entity values will not be changed
     pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> Result<()> {
-        // We force add the new resolved value: even if it is already present in the symbol table
-        // we duplicate it to allow several raw values to map to it
-        let res_value_idx = self
-            .resolved_symbol_table
-            .add_symbol(entity_value.resolved_value);
+        let mut tokens = whitespace_tokenizer(&entity_value.raw_value);
+        if let Some(first_token) = tokens.next() {
+            let tokens_it = iter::once(first_token).chain(tokens);
+            // We force add the new resolved value: even if it is already present in the symbol table
+            // we duplicate it to allow several raw values to map to it
+            let res_value_idx = self
+                .resolved_symbol_table
+                .add_symbol(entity_value.resolved_value);
+            for (_, token) in tokens_it {
+                let token_idx = self.tokens_symbol_table.add_symbol(token);
 
-        let tokens: Vec<(Range<usize>, String)> = whitespace_tokenizer(&entity_value.raw_value)
-            .into_iter()
-            .collect();
+                // Update token_to_resolved_values map
+                self.token_to_resolved_values
+                    .entry(token_idx)
+                    .and_modify(|e| {
+                        e.insert(res_value_idx);
+                    })
+                    .or_insert_with(|| vec![res_value_idx].into_iter().collect());
 
-        if tokens.len() == 0 {
+                // Update resolved_value_to_tokens map
+                self.resolved_value_to_tokens
+                    .entry(res_value_idx)
+                    .and_modify(|(_, v)| v.push(token_idx))
+                    .or_insert((rank, vec![token_idx]));
+            }
+        } else {
             bail!("Can't add value '{}' because it's empty or contains only whitespaces.", entity_value.raw_value)
         }
 
-        for (_, token) in tokens.into_iter() {
-            let token_idx = self.tokens_symbol_table.add_symbol(token);
-
-            // Update token_to_resolved_values map
-            self.token_to_resolved_values
-                .entry(token_idx)
-                .and_modify(|e| {
-                    e.insert(res_value_idx);
-                })
-                .or_insert_with(|| vec![res_value_idx].into_iter().collect());
-
-            // Update resolved_value_to_tokens map
-            self.resolved_value_to_tokens
-                .entry(res_value_idx)
-                .and_modify(|(_, v)| v.push(token_idx))
-                .or_insert((rank, vec![token_idx]));
-        }
         Ok(())
     }
 
