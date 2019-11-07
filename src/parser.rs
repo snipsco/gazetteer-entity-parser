@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::fs;
+use std::iter;
 use std::ops::Range;
 use std::path::Path;
 use symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
@@ -150,34 +151,41 @@ impl PartialOrd for ParsedValue {
 impl Parser {
     /// Add a single entity value, along with its rank, to the parser
     /// The ranks of the other entity values will not be changed
-    pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) {
-        // We force add the new resolved value: even if it is already present in the symbol table
-        // we duplicate it to allow several raw values to map to it
-        let res_value_idx = self
-            .resolved_symbol_table
-            .add_symbol(entity_value.resolved_value);
+    pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> Result<()> {
+        let mut tokens = whitespace_tokenizer(&entity_value.raw_value);
+        if let Some(first_token) = tokens.next() {
+            let tokens_it = iter::once(first_token).chain(tokens);
+            // We force add the new resolved value: even if it is already present in the symbol table
+            // we duplicate it to allow several raw values to map to it
+            let res_value_idx = self
+                .resolved_symbol_table
+                .add_symbol(entity_value.resolved_value);
+            for (_, token) in tokens_it {
+                let token_idx = self.tokens_symbol_table.add_symbol(token);
 
-        for (_, token) in whitespace_tokenizer(&entity_value.raw_value) {
-            let token_idx = self.tokens_symbol_table.add_symbol(token);
+                // Update token_to_resolved_values map
+                self.token_to_resolved_values
+                    .entry(token_idx)
+                    .and_modify(|e| {
+                        e.insert(res_value_idx);
+                    })
+                    .or_insert_with(|| vec![res_value_idx].into_iter().collect());
 
-            // Update token_to_resolved_values map
-            self.token_to_resolved_values
-                .entry(token_idx)
-                .and_modify(|e| {
-                    e.insert(res_value_idx);
-                })
-                .or_insert_with(|| vec![res_value_idx].into_iter().collect());
-
-            // Update resolved_value_to_tokens map
-            self.resolved_value_to_tokens
-                .entry(res_value_idx)
-                .and_modify(|(_, v)| v.push(token_idx))
-                .or_insert((rank, vec![token_idx]));
+                // Update resolved_value_to_tokens map
+                self.resolved_value_to_tokens
+                    .entry(res_value_idx)
+                    .and_modify(|(_, v)| v.push(token_idx))
+                    .or_insert((rank, vec![token_idx]));
+            }
+        } else {
+            bail!("Can't add value '{}' because it's empty or contains only whitespaces.", entity_value.raw_value)
         }
+
+        Ok(())
     }
 
     /// Prepend a list of entity values to the parser and update the ranks accordingly
-    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) {
+    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) -> Result<()> {
         // update rank of previous values
         for res_val in self.resolved_symbol_table.get_all_indices() {
             self.resolved_value_to_tokens
@@ -185,13 +193,14 @@ impl Parser {
                 .and_modify(|(rank, _)| *rank += entity_values.len() as u32);
         }
         for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), rank as u32);
+            self.add_value(entity_value.clone(), rank as u32)?;
         }
 
         // Update the stop words and edge cases
         let n_stop_words = self.n_stop_words;
         let additional_stop_words = self.additional_stop_words.clone();
         self.set_stop_words(n_stop_words, Some(additional_stop_words));
+        Ok(())
     }
 
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
@@ -348,11 +357,11 @@ impl Parser {
             // we inject new values from rank 0 to n_new_values - 1
             true => 0,
             // we inject new values from the current last rank onwards
-            false => self.resolved_value_to_tokens.len(),
-        } as u32;
+            false => self.resolved_value_to_tokens.len() as u32,
+        };
 
         for (rank, entity_value) in new_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), new_start_rank + rank as u32);
+            self.add_value(entity_value.clone(), new_start_rank + rank as u32)?;
             self.injected_values.insert(entity_value.resolved_value);
         }
 
@@ -1309,7 +1318,7 @@ mod tests {
             },
         ];
 
-        parser.prepend_values(values_to_prepend);
+        parser.prepend_values(values_to_prepend).unwrap();
 
         let parsed = parser.run(input).unwrap();
         assert_eq!(
@@ -1653,6 +1662,26 @@ mod tests {
         assert!(!parser
             .resolved_value_to_tokens
             .contains_key(&flying_stones_idx));
+    }
+
+    #[test]
+    fn test_injection_should_fail_when_adding_empty_values() {
+        let gazetteer = Gazetteer::default();
+        let mut parser = ParserBuilder::default()
+            .minimum_tokens_ratio(0.6)
+            .gazetteer(gazetteer)
+            .build()
+            .unwrap();
+
+        let new_values_1 = vec![EntityValue {
+            resolved_value: "some_resolved_value".to_string(),
+            raw_value: " ".to_string(),
+        }];
+
+        let is_err = parser
+            .inject_new_values(new_values_1.clone(), true, true)
+            .is_err();
+        assert!(is_err);
     }
 
     #[test]
