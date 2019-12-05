@@ -31,7 +31,7 @@ Example
            .unwrap();
    
        let sentence = "My favourite artists are the stones and fab four";
-       let extracted_entities = parser.run(sentence, 5).unwrap();
+       let extracted_entities = parser.run(sentence, 5);
        assert_eq!(
            extracted_entities,
            vec![
