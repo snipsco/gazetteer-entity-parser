@@ -154,7 +154,7 @@ impl ParserRegistry {
             .chain(self.additional_stop_words.clone().into_iter())
             .collect();
 
-        // Update the set of edge_cases. i.e. resolved value that only contain stop words
+        // Update the set of edge_cases. i.e. resolved values that only contain stop words
         self.edge_cases = self
             .resolved_value_to_tokens
             .iter()
