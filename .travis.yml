@@ -10,6 +10,5 @@ matrix:
   - rust: nightly
 
 script:
-  - cargo build --all
-  - cargo check --benches --examples
+  - cargo check --all --tests --benches --examples
   - cargo test --all
