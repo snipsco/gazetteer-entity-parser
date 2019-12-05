@@ -95,7 +95,7 @@ fn main() {
             io::stdout().flush().unwrap();
             let mut query = String::new();
             io::stdin().read_line(&mut query).unwrap();
-            let result = parser.run(query.trim(), max_alternatives).unwrap();
+            let result = parser.run(query.trim(), max_alternatives);
             println!("{:?}", result);
         }
     } else {

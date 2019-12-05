@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 /// Implementation of a symbol table that
 /// - always maps a given index to a single string
 /// - allows mapping a string to several indices
-#[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct TokenSymbolTable {
     string_to_index: BTreeMap<String, u32>,
     available_index: u32,
@@ -37,18 +37,12 @@ impl TokenSymbolTable {
             .find(|(_, sym_idx)| *sym_idx == idx)
             .map(|(symbol, _)| symbol)
     }
-
-    /// Remove the unique symbol corresponding to an index in the symbol table
-    pub fn remove_index(&mut self, idx: &u32) -> Option<String> {
-        let symbol = self.find_index(idx).cloned();
-        symbol.and_then(|symbol| self.string_to_index.remove(&symbol).map(|_| symbol))
-    }
 }
 
-#[derive(PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct ResolvedSymbolTable {
-    index_to_resolved: BTreeMap<u32, String>,
-    available_index: u32,
+    index_to_resolved: Vec<String>,
+    length: u32,
 }
 
 impl ResolvedSymbolTable {
@@ -56,37 +50,26 @@ impl ResolvedSymbolTable {
     /// generate a new index to allow the symbol to be duplicated in the symbol table
     /// Returns the newly generated corresponding index
     pub fn add_symbol(&mut self, symbol: String) -> u32 {
-        let available_index = self.available_index;
-        self.index_to_resolved.insert(available_index, symbol);
-        self.available_index += 1;
-        available_index
+        self.index_to_resolved.push(symbol);
+        self.length += 1;
+        self.length - 1
     }
 
     /// Find a symbol from its index
     pub fn find_index(&self, index: &u32) -> Option<&String> {
-        self.index_to_resolved.get(index)
+        if *index >= self.length {
+            None
+        } else {
+            Some(&self.index_to_resolved[*index as usize])
+        }
     }
+}
 
-    /// Find all the indices corresponding to a single symbol
-    pub fn find_symbol(&self, symbol: &str) -> Vec<u32> {
-        self.index_to_resolved
-            .iter()
-            .filter(|(_, sym)| *sym == symbol)
-            .map(|(idx, _)| *idx)
-            .collect()
-    }
+impl IntoIterator for ResolvedSymbolTable {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
 
-    /// Remove a symbol and all its linked indices from the symbol table
-    pub fn remove_symbol(&mut self, symbol: &str) -> Vec<u32> {
-        let indices = self.find_symbol(symbol);
-        indices
-            .into_iter()
-            .flat_map(|idx| self.index_to_resolved.remove(&idx).map(|_| idx))
-            .collect()
-    }
-
-    /// Get a vec of all the integer values used to represent the symbols in the symbol table
-    pub fn get_all_indices(&self) -> Vec<&u32> {
-        self.index_to_resolved.keys().collect()
+    fn into_iter(self) -> Self::IntoIter {
+        self.index_to_resolved.into_iter()
     }
 }

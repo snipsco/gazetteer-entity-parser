@@ -53,13 +53,15 @@
 //!     .minimum_tokens_ratio(0.5)
 //!     .gazetteer(gazetteer)
 //!     .n_stop_words(1)
-//!     .additional_stop_words(vec!["a".to_string(), "for".to_string()]).build().unwrap();
+//!     .additional_stop_words(vec!["a".to_string(), "for".to_string()])
+//!     .build()
+//!     .unwrap();
 //!
 //! // Maximum number of alternative resolved values to return
 //! let max_alternatives = 5;
 //!
 //! // Parse a sentence
-//! let parsed_stones = parser.run("I want to listen to the stones", max_alternatives).unwrap();
+//! let parsed_stones = parser.run("I want to listen to the stones", max_alternatives);
 //! assert_eq!(
 //!     parsed_stones,
 //!     vec![ParsedValue {
@@ -74,7 +76,7 @@
 //! );
 //!
 //! // Example with an ambiguity, where the artist with smaller rank is preferred
-//! let parsed_brel = parser.run("I want to listen to brel", max_alternatives).unwrap();
+//! let parsed_brel = parser.run("I want to listen to brel", max_alternatives);
 //! assert_eq!(
 //!     parsed_brel,
 //!     vec![ParsedValue {
@@ -95,10 +97,11 @@ mod constants;
 mod data;
 mod parser;
 mod parser_builder;
+mod parser_registry;
 mod symbol_table;
 mod utils;
 
-pub use data::*;
+pub use data::{EntityValue, Gazetteer, ParsedValue, ResolvedValue};
 pub use parser::*;
 pub use parser_builder::*;
 pub mod errors;
