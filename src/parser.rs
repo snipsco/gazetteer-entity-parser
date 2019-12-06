@@ -1,18 +1,18 @@
 use crate::constants::*;
 use crate::data::EntityValue;
 use crate::errors::*;
-use crate::symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
+use crate::parser_registry::ParserRegistry;
 use crate::utils::{check_threshold, whitespace_tokenizer};
-use failure::{bail, format_err, ResultExt};
-use fnv::{FnvHashMap as HashMap, FnvHashSet as HashSet};
+use crate::ParsedValue;
+use failure::{format_err, ResultExt};
+use fnv::{FnvHashMap, FnvHashSet};
 use rmp_serde::{from_read, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BinaryHeap, HashSet};
 use std::fs;
-use std::iter;
 use std::ops::Range;
 use std::path::Path;
 
@@ -22,29 +22,11 @@ use std::path::Path;
 /// the value that was added first (see Gazetteer).
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
 pub struct Parser {
-    // Symbol table for the raw tokens
-    tokens_symbol_table: TokenSymbolTable,
-    // Symbol table for the resolved values
-    // The latter differs from the first one in that it can contain the same resolved value
-    // multiple times (to allow for multiple raw values corresponding to the same resolved value)
-    resolved_symbol_table: ResolvedSymbolTable,
-    // maps token to set of resolved values containing token
-    token_to_resolved_values: HashMap<u32, BTreeSet<u32>>,
-    // maps resolved value to a tuple (rank, tokens)
-    resolved_value_to_tokens: HashMap<u32, (u32, Vec<u32>)>,
-    // number of stop words to extract from the entity data
-    n_stop_words: usize,
-    // external list of stop words
-    additional_stop_words: Vec<String>,
-    // set of all stop words
-    stop_words: HashSet<u32>,
-    // values composed only of stop words
-    edge_cases: HashSet<u32>,
-    // Keep track of values injected thus far
-    injected_values: HashSet<String>,
-    // Parsing threshold giving minimal fraction of tokens necessary to parse a value
+    /// Registry holding the underlying parser data
+    registry: ParserRegistry,
+    /// Parsing threshold giving minimal fraction of tokens necessary to parse a value
     threshold: f32,
-    // License information associated to the parser's data
+    /// License information associated to the parser's data
     #[serde(default)]
     license_info: Option<LicenseInfo>,
 }
@@ -76,7 +58,7 @@ pub struct PossibleMatch {
     first_token_in_resolution: usize,
     last_token_in_resolution: usize,
     rank: u32,
-    // List of tuples (resolved_value_idx, rank)
+    /// List of tuples (resolved_value_idx, rank)
     alternative_resolved_values: Vec<(u32, u32)>,
 }
 
@@ -114,101 +96,23 @@ impl PartialOrd for PossibleMatch {
     }
 }
 
-/// Struct holding an individual parsing result. The result of a run of the parser on a query
-/// will be a vector of ParsedValue. The `range` attribute is the range of the characters
-/// composing the raw value in the input query.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct ParsedValue {
-    pub resolved_value: ResolvedValue,
-    pub alternatives: Vec<ResolvedValue>,
-    // character-level
-    pub range: Range<usize>,
-    pub matched_value: String,
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct ResolvedValue {
-    pub resolved: String,
-    pub raw_value: String,
-}
-
-impl Ord for ParsedValue {
-    fn cmp(&self, other: &ParsedValue) -> Ordering {
-        match self.partial_cmp(other) {
-            Some(value) => value,
-            // The following should not happen: we need to make sure that we compare only
-            // comparable ParsedValues wherever we use a heap of ParsedValue's (see e.g. the
-            // `parse_input` method)
-            None => panic!("Parsed values are not comparable: {:?}, {:?}", self, other),
-        }
-    }
-}
-
-impl PartialOrd for ParsedValue {
-    fn partial_cmp(&self, other: &ParsedValue) -> Option<Ordering> {
-        if self.range.end <= other.range.start {
-            Some(Ordering::Less)
-        } else if self.range.start >= other.range.end {
-            Some(Ordering::Greater)
-        } else {
-            None
-        }
-    }
-}
-
 impl Parser {
-    /// Add a single entity value, along with its rank, to the parser
+    /// Adds a single entity value, along with its rank, to the parser registry and returns
+    /// the corresponding resolved value index or None if the entity value is empty.
     /// The ranks of the other entity values will not be changed
-    pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> Result<()> {
-        let mut tokens = whitespace_tokenizer(&entity_value.raw_value);
-        if let Some(first_token) = tokens.next() {
-            let tokens_it = iter::once(first_token).chain(tokens);
-            // We force add the new resolved value: even if it is already present in the symbol table
-            // we duplicate it to allow several raw values to map to it
-            let res_value_idx = self
-                .resolved_symbol_table
-                .add_symbol(entity_value.resolved_value);
-            for (_, token) in tokens_it {
-                let token_idx = self.tokens_symbol_table.add_symbol(token);
-
-                // Update token_to_resolved_values map
-                self.token_to_resolved_values
-                    .entry(token_idx)
-                    .and_modify(|e| {
-                        e.insert(res_value_idx);
-                    })
-                    .or_insert_with(|| vec![res_value_idx].into_iter().collect());
-
-                // Update resolved_value_to_tokens map
-                self.resolved_value_to_tokens
-                    .entry(res_value_idx)
-                    .and_modify(|(_, v)| v.push(token_idx))
-                    .or_insert((rank, vec![token_idx]));
-            }
-        } else {
-            bail!("Can't add value '{}' because it's empty or contains only whitespaces.", entity_value.raw_value)
-        }
-
-        Ok(())
+    pub fn add_value(&mut self, entity_value: EntityValue, rank: u32) -> Option<u32> {
+        self.registry.add_value(entity_value.into_tokenized(), rank)
     }
 
-    /// Prepend a list of entity values to the parser and update the ranks accordingly
-    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) -> Result<()> {
-        // update rank of previous values
-        for res_val in self.resolved_symbol_table.get_all_indices() {
-            self.resolved_value_to_tokens
-                .entry(*res_val)
-                .and_modify(|(rank, _)| *rank += entity_values.len() as u32);
-        }
-        for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), rank as u32)?;
-        }
-
-        // Update the stop words and edge cases
-        let n_stop_words = self.n_stop_words;
-        let additional_stop_words = self.additional_stop_words.clone();
-        self.set_stop_words(n_stop_words, Some(additional_stop_words));
-        Ok(())
+    /// Prepends a list of entity values to the parser and update the ranks accordingly.
+    /// /// Returns the corresponding list of resolved value indices.
+    pub fn prepend_values(&mut self, entity_values: Vec<EntityValue>) -> Vec<u32> {
+        self.registry.prepend_values(
+            entity_values
+                .into_iter()
+                .map(|value| value.into_tokenized())
+                .collect(),
+        )
     }
 
     /// Set the threshold (minimum fraction of tokens to match for an entity to be parsed).
@@ -216,53 +120,19 @@ impl Parser {
         self.threshold = threshold;
     }
 
-    /// Update an internal set of stop words and corresponding edge cases.
+    /// Updates an internal set of stop words and corresponding edge cases.
     /// The set of stop words is made of the `n_stop_words` most frequent raw tokens in the
     /// gazetteer used to generate the parser. An optional `additional_stop_words` vector of
     /// strings can be added to the stop words. The edge cases are defined to the be the resolved
-    /// values whose raw value is composed only of stop words. There are examined seperately
+    /// values whose raw value is composed only of stop words. There are examined separately
     /// during parsing, and will match if and only if they are present verbatim in the input
     /// string.
-    pub fn set_stop_words(
-        &mut self,
-        n_stop_words: usize,
-        additional_stop_words: Option<Vec<String>>,
-    ) {
-        // Update the set of stop words with the most frequent words in the gazetteer
-        let mut tokens_with_counts = self
-            .token_to_resolved_values
-            .iter()
-            .map(|(idx, res_values)| (idx.clone(), res_values.len()))
-            .collect::<Vec<_>>();
-
-        tokens_with_counts.sort_by_key(|&(_, count)| -(count as i32));
-        self.n_stop_words = n_stop_words;
-        self.stop_words = tokens_with_counts
-            .into_iter()
-            .take(n_stop_words)
-            .map(|(idx, _)| idx)
-            .collect();
-
-        // add the words from the `additional_stop_words` vec (and potentially add them to
-        // the symbol table and to tokens_to_resolved_value)
-        if let Some(additional_stop_words_vec) = additional_stop_words {
-            self.additional_stop_words = additional_stop_words_vec.clone();
-            for tok_s in additional_stop_words_vec.into_iter() {
-                let tok_idx = self.tokens_symbol_table.add_symbol(tok_s);
-                self.stop_words.insert(tok_idx);
-                self.token_to_resolved_values
-                    .entry(tok_idx)
-                    .or_insert_with(|| BTreeSet::new());
-            }
-        }
-
-        // Update the set of edge_cases. i.e. resolved value that only contain stop words
-        self.edge_cases = self
-            .resolved_value_to_tokens
-            .iter()
-            .filter(|(_, (_, tokens))| tokens.iter().all(|token| self.stop_words.contains(token)))
-            .map(|(res_val, _)| *res_val)
-            .collect();
+    pub fn set_stop_words<T>(&mut self, n_stop_words: usize, additional_stop_words: T)
+    where
+        T: Into<Option<Vec<String>>>,
+    {
+        self.registry
+            .set_stop_words(n_stop_words, additional_stop_words)
     }
 
     /// Set the license info
@@ -270,32 +140,12 @@ impl Parser {
         self.license_info = license_info.into();
     }
 
-    /// Get the set of stop words
-    pub fn get_stop_words(&self) -> HashSet<String> {
-        self.stop_words
-            .iter()
-            .flat_map(|idx| self.tokens_symbol_table.find_index(idx).cloned())
-            .collect()
-    }
-
-    /// Get the set of edge cases, containing only stop words
-    pub fn get_edge_cases(&self) -> HashSet<String> {
-        self.edge_cases
-            .iter()
-            .flat_map(|idx| self.resolved_symbol_table.find_index(idx).cloned())
-            .collect()
-    }
-
     /// Parse the input string `input` and output a vec of `ParsedValue`.
     /// The `max_alternatives` defines how many alternative resolved values must be returned in
     /// addition to the top one.
-    pub fn run(&self, input: &str, max_alternatives: usize) -> Result<Vec<ParsedValue>> {
-        let matches_heap = self
-            .find_possible_matches(input, self.threshold, max_alternatives)
-            .with_context(|_| format_err!("Error when finding possible matches"))?;
-        Ok(self
-            .parse_input(input, matches_heap)
-            .with_context(|_| format_err!("Error when filtering possible matches"))?)
+    pub fn run(&self, input: &str, max_alternatives: usize) -> Vec<ParsedValue> {
+        let matches_heap = self.find_possible_matches(input, self.threshold, max_alternatives);
+        self.parse_input(input, matches_heap)
     }
 
     /// Add new values to an already trained Parser. This function is used for entity injection.
@@ -304,82 +154,17 @@ impl Parser {
     /// or appended (`prepend=false`). Setting `from_vanilla` to true allows to remove all
     /// previously injected values before adding the new ones.
     pub fn inject_new_values(
-        &mut self,
+        mut self,
         new_values: Vec<EntityValue>,
         prepend: bool,
         from_vanilla: bool,
-    ) -> Result<()> {
-        if from_vanilla {
-            // Remove the resolved values from the resolved_symbol_table
-            // Remove the resolved values from the resolved_value_to_tokens map
-            // remove the corresponding resolved value from the token_to_resolved_value map
-            // if after removing, a token is left absent from all resolved entities, then remove
-            // it from the tokens_to_resolved_value maps and from the tokens_symbol_table
-            let mut tokens_marked_for_removal: HashSet<u32> = HashSet::default();
-            for val in &self.injected_values {
-                for res_val in self.resolved_symbol_table.remove_symbol(&val) {
-                    let (_, tokens) = self
-                        .get_tokens_from_resolved_value(&res_val)
-                        .with_context(|_| {
-                            format_err!("Error when retrieving tokens of resolved value '{}'", val)
-                        })?
-                        .clone();
-                    self.resolved_value_to_tokens.remove(&res_val);
-                    for tok in tokens {
-                        let remaining_values = self
-                            .token_to_resolved_values
-                            .get_mut(&tok)
-                            .map(|v| {
-                                v.remove(&res_val);
-                                v
-                            })
-                            .ok_or_else(|| {
-                                format_err!(
-                                    "Cannot find token index {} in `token_to_resolved_values`",
-                                    tok
-                                )
-                            })?;
-
-                        // Check the remaining resolved values containing the token
-                        if remaining_values.is_empty() {
-                            tokens_marked_for_removal.insert(tok);
-                        }
-                    }
-                }
-            }
-            for tok_idx in tokens_marked_for_removal {
-                self.tokens_symbol_table.remove_index(&tok_idx);
-                self.token_to_resolved_values.remove(&tok_idx);
-            }
-        }
-
-        if prepend {
-            // update rank of previous values
-            let n_new_values = new_values.len() as u32;
-            for res_val in self.resolved_symbol_table.get_all_indices() {
-                self.resolved_value_to_tokens
-                    .entry(*res_val)
-                    .and_modify(|(rank, _)| *rank += n_new_values);
-            }
-        }
-
-        let new_start_rank = match prepend {
-            // we inject new values from rank 0 to n_new_values - 1
-            true => 0,
-            // we inject new values from the current last rank onwards
-            false => self.resolved_value_to_tokens.len() as u32,
-        };
-
-        for (rank, entity_value) in new_values.into_iter().enumerate() {
-            self.add_value(entity_value.clone(), new_start_rank + rank as u32)?;
-            self.injected_values.insert(entity_value.resolved_value);
-        }
-
-        // Update the stop words and edge cases
-        let n_stop_words = self.n_stop_words;
-        let additional_stop_words = self.additional_stop_words.clone();
-        self.set_stop_words(n_stop_words, Some(additional_stop_words));
-        Ok(())
+    ) -> Self {
+        self.registry = self.registry.inject_new_values(
+            new_values.into_iter().map(|v| v.into_tokenized()).collect(),
+            prepend,
+            from_vanilla,
+        );
+        self
     }
 }
 
@@ -432,53 +217,6 @@ impl Parser {
 }
 
 impl Parser {
-    /// get resolved value
-    fn get_tokens_from_resolved_value(&self, resolved_value: &u32) -> Result<&(u32, Vec<u32>)> {
-        self.resolved_value_to_tokens
-            .get(resolved_value)
-            .ok_or_else(|| {
-                format_err!(
-                    "Cannot find resolved value index {} in `resolved_value_to_tokens`",
-                    resolved_value
-                )
-            })
-    }
-
-    /// get resolved values from token
-    fn get_resolved_values_from_token(&self, token: &u32) -> Result<&BTreeSet<u32>> {
-        self.token_to_resolved_values.get(token).ok_or_else(|| {
-            format_err!(
-                "Cannot find token index {} in `token_to_resolved_values`",
-                token
-            )
-        })
-    }
-
-    /// get the resolved values from a possible match
-    fn get_resolved_value(&self, resolved_value_index: u32) -> Result<ResolvedValue> {
-        let resolved = self
-            .resolved_symbol_table
-            .find_index(&resolved_value_index)
-            .cloned()
-            .ok_or_else(|| {
-                format_err!("Missing key for resolved value {}", resolved_value_index)
-            })?;
-        let matched_value = self
-            .resolved_value_to_tokens
-            .get(&resolved_value_index)
-            .ok_or_else(|| format_err!("Missing key for resolved value {}", resolved_value_index))?
-            .1
-            .iter()
-            .flat_map(|token_idx| self.tokens_symbol_table.find_index(token_idx))
-            .map(|token_string| token_string.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        Ok(ResolvedValue {
-            resolved,
-            raw_value: matched_value,
-        })
-    }
-
     /// Find and return all possible matches in a string, ordered by the order defined on
     /// `PossibleMatch`, from max to min.
     fn find_possible_matches(
@@ -486,17 +224,17 @@ impl Parser {
         input: &str,
         threshold: f32,
         max_alternatives: usize,
-    ) -> Result<BinaryHeap<PossibleMatch>> {
-        let mut partial_matches: HashMap<u32, PossibleMatch> = HashMap::default();
+    ) -> BinaryHeap<PossibleMatch> {
+        let mut partial_matches: FnvHashMap<u32, PossibleMatch> = FnvHashMap::default();
         let mut final_matches: Vec<PossibleMatch> = vec![];
-        let mut skipped_tokens: HashMap<usize, (Range<usize>, u32)> = HashMap::default();
+        let mut skipped_tokens: FnvHashMap<usize, (Range<usize>, u32)> = FnvHashMap::default();
         for (token_idx, (range, token)) in whitespace_tokenizer(input).enumerate() {
-            if let Some(value) = self.tokens_symbol_table.find_symbol(&token) {
-                let res_vals_from_token = self.get_resolved_values_from_token(&value)?;
+            if let Some(value) = self.registry.get_token_idx(&token) {
+                let res_vals_from_token = self.registry.get_resolved_values(*value);
                 if res_vals_from_token.is_empty() {
                     continue;
                 }
-                if !self.stop_words.contains(&value) {
+                if !self.registry.is_stop_word(*value) {
                     for res_val in res_vals_from_token {
                         self.update_or_insert_possible_match(
                             *value,
@@ -507,33 +245,34 @@ impl Parser {
                             &mut final_matches,
                             &mut skipped_tokens,
                             threshold,
-                        )?;
+                        );
                     }
                 } else {
                     skipped_tokens.insert(token_idx, (range.clone(), *value));
-                    // Iterate over all edge cases and try to add or update corresponding
-                    // PossibleMatch's. Using a threshold of 1.
-                    for res_val in self.edge_cases.iter() {
-                        if res_vals_from_token.contains(res_val) {
-                            self.update_or_insert_possible_match(
-                                *value,
-                                *res_val,
-                                token_idx,
-                                range.clone(),
-                                &mut partial_matches,
-                                &mut final_matches,
-                                &mut skipped_tokens,
-                                1.0,
-                            )?;
-                        }
+                    // Iterate over all resolved values which are also edge cases and
+                    // add or update the corresponding `PossibleMatch` using a threshold of 1.
+                    for res_val in self
+                        .registry
+                        .get_edge_cases_indices()
+                        .intersection(res_vals_from_token)
+                    {
+                        self.update_or_insert_possible_match(
+                            *value,
+                            *res_val,
+                            token_idx,
+                            range.clone(),
+                            &mut partial_matches,
+                            &mut final_matches,
+                            &mut skipped_tokens,
+                            1.0,
+                        );
                     }
 
                     // Iterate over current possible matches containing the stop word and
                     // try to grow them (but do not initiate a new possible match)
-                    // Threshold depends on whether the res_val is an edge case or not
                     for (res_val, mut possible_match) in &mut partial_matches {
                         if !res_vals_from_token.contains(res_val)
-                            || self.edge_cases.contains(res_val)
+                            || self.registry.is_edge_case(*res_val)
                         {
                             continue;
                         }
@@ -544,7 +283,7 @@ impl Parser {
                             range.clone(),
                             threshold,
                             &mut final_matches,
-                        )?;
+                        );
                     }
                 }
             }
@@ -554,7 +293,7 @@ impl Parser {
         let final_matches = partial_matches
             .values()
             .filter(|possible_match| {
-                if self.edge_cases.contains(&possible_match.resolved_value) {
+                if self.registry.is_edge_case(possible_match.resolved_value) {
                     possible_match.check_threshold(1.0)
                 } else {
                     possible_match.check_threshold(threshold)
@@ -566,7 +305,7 @@ impl Parser {
             });
 
         // Group possible matches that matched the same underlying range
-        Ok(group_matches(final_matches, max_alternatives))
+        group_matches(final_matches, max_alternatives)
     }
 
     fn update_or_insert_possible_match(
@@ -575,11 +314,11 @@ impl Parser {
         res_val: u32,
         token_idx: usize,
         range: Range<usize>,
-        partial_matches: &mut HashMap<u32, PossibleMatch>,
+        partial_matches: &mut FnvHashMap<u32, PossibleMatch>,
         mut final_matches: &mut Vec<PossibleMatch>,
-        skipped_tokens: &mut HashMap<usize, (Range<usize>, u32)>,
+        skipped_tokens: &mut FnvHashMap<usize, (Range<usize>, u32)>,
         threshold: f32,
-    ) -> Result<()> {
+    ) {
         match partial_matches.entry(res_val) {
             Entry::Occupied(mut entry) => {
                 self.update_previous_match(
@@ -589,7 +328,7 @@ impl Parser {
                     range,
                     threshold,
                     &mut final_matches,
-                )?;
+                );
             }
             Entry::Vacant(entry) => {
                 self.insert_new_possible_match(
@@ -599,13 +338,12 @@ impl Parser {
                     token_idx,
                     threshold,
                     &skipped_tokens,
-                )?
+                )
                 .map(|new_possible_match| {
                     entry.insert(new_possible_match);
                 });
             }
         }
-        Ok(())
     }
 
     fn update_previous_match(
@@ -616,9 +354,8 @@ impl Parser {
         range: Range<usize>,
         threshold: f32,
         ref mut final_matches: &mut Vec<PossibleMatch>,
-    ) -> Result<()> {
-        let (rank, otokens) =
-            self.get_tokens_from_resolved_value(&possible_match.resolved_value)?;
+    ) {
+        let (rank, otokens) = self.registry.get_tokens(possible_match.resolved_value);
 
         if token_idx == possible_match.last_token_in_input + 1 {
             // Grow the last Possible Match
@@ -632,7 +369,7 @@ impl Parser {
                     possible_match.last_token_in_input = token_idx;
                     possible_match.last_token_in_resolution = otoken_idx;
                     possible_match.tokens_range.end += 1;
-                    return Ok(());
+                    return;
                 }
             }
         }
@@ -645,10 +382,11 @@ impl Parser {
             final_matches.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let last_token_in_resolution =
-            otokens.iter().position(|e| *e == value).ok_or_else(|| {
-                format_err!("Missing token {} from list {:?}", value, otokens.clone())
-            })?;
+        let last_token_in_resolution = otokens.iter().position(|e| *e == value).expect(&*format!(
+            "Missing token {} from list {:?}",
+            value,
+            otokens.clone()
+        ));
 
         *possible_match = PossibleMatch {
             resolved_value: possible_match.resolved_value,
@@ -662,7 +400,6 @@ impl Parser {
             rank: *rank,
             alternative_resolved_values: vec![],
         };
-        Ok(())
     }
 
     /// when we insert a new possible match, we need to backtrack to check if the value did not
@@ -674,14 +411,14 @@ impl Parser {
         range: Range<usize>,
         token_idx: usize,
         threshold: f32,
-        skipped_tokens: &HashMap<usize, (Range<usize>, u32)>,
-    ) -> Result<Option<PossibleMatch>> {
-        let (rank, otokens) = self.get_tokens_from_resolved_value(&res_val)?;
-        let last_token_in_resolution =
-            otokens.iter().position(|e| *e == value).ok_or_else(|| {
-                format_err!("Missing token {} from list {:?}", value, otokens.clone())
-            })?;
-
+        skipped_tokens: &FnvHashMap<usize, (Range<usize>, u32)>,
+    ) -> Option<PossibleMatch> {
+        let (rank, otokens) = self.registry.get_tokens(res_val);
+        let last_token_in_resolution = otokens.iter().position(|e| *e == value).expect(&*format!(
+            "Missing token {} from list {:?}",
+            value,
+            otokens.clone()
+        ));
         let mut possible_match = PossibleMatch {
             resolved_value: res_val,
             range,
@@ -725,16 +462,16 @@ impl Parser {
             n_skips,
             threshold,
         ) {
-            Ok(Some(possible_match))
+            Some(possible_match)
         } else {
-            Ok(None)
+            None
         }
     }
 
     fn reduce_possible_match(
         input: &str,
         possible_match: PossibleMatch,
-        overlapping_tokens: HashSet<usize>,
+        overlapping_tokens: FnvHashSet<usize>,
     ) -> Option<PossibleMatch> {
         let reduced_tokens = whitespace_tokenizer(input)
             .enumerate()
@@ -769,8 +506,8 @@ impl Parser {
         &self,
         input: &str,
         mut matches_heap: BinaryHeap<PossibleMatch>,
-    ) -> Result<Vec<ParsedValue>> {
-        let mut taken_tokens: HashSet<usize> = HashSet::default();
+    ) -> Vec<ParsedValue> {
+        let mut taken_tokens: FnvHashSet<usize> = FnvHashSet::default();
         let n_total_tokens = whitespace_tokenizer(input).count();
         let mut parsing: BinaryHeap<ParsedValue> = BinaryHeap::default();
 
@@ -780,7 +517,7 @@ impl Parser {
             let tokens_range_start = possible_match.tokens_range.start;
             let tokens_range_end = possible_match.tokens_range.end;
 
-            let overlapping_tokens: HashSet<_> = taken_tokens
+            let overlapping_tokens: FnvHashSet<_> = taken_tokens
                 .iter()
                 .filter(|idx| {
                     possible_match.tokens_range.start <= **idx
@@ -794,8 +531,8 @@ impl Parser {
                     Self::reduce_possible_match(input, possible_match, overlapping_tokens);
                 if let Some(reduced_possible_match) = opt_reduced_possible_match {
                     let threshold = if self
-                        .edge_cases
-                        .contains(&reduced_possible_match.resolved_value)
+                        .registry
+                        .is_edge_case(reduced_possible_match.resolved_value)
                     {
                         1.0
                     } else {
@@ -815,12 +552,14 @@ impl Parser {
                     .skip(possible_match.range.start)
                     .take(possible_match.range.len())
                     .collect(),
-                resolved_value: self.get_resolved_value(possible_match.resolved_value)?,
+                resolved_value: self
+                    .registry
+                    .get_resolved_value(possible_match.resolved_value),
                 alternatives: possible_match
                     .alternative_resolved_values
                     .iter()
-                    .map(|(idx, _)| Ok(self.get_resolved_value(*idx)?))
-                    .collect::<Result<Vec<_>>>()?,
+                    .map(|(idx, _)| self.registry.get_resolved_value(*idx))
+                    .collect(),
             });
             for idx in tokens_range_start..tokens_range_end {
                 taken_tokens.insert(idx);
@@ -828,7 +567,7 @@ impl Parser {
         }
 
         // Output ordered parsing
-        Ok(parsing.into_sorted_vec())
+        parsing.into_sorted_vec()
     }
 
     fn get_parser_config(&self) -> ParserConfig {
@@ -836,8 +575,8 @@ impl Parser {
             parser_filename: PARSER_FILE.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             threshold: self.threshold,
-            stop_words: self.get_stop_words(),
-            edge_cases: self.get_edge_cases(),
+            stop_words: self.registry.get_stop_words(),
+            edge_cases: self.registry.get_edge_cases(),
         }
     }
 }
@@ -849,7 +588,7 @@ fn group_matches(
     final_matches
         .iter()
         .fold(
-            HashMap::<Range<usize>, BinaryHeap<&PossibleMatch>>::default(),
+            FnvHashMap::<Range<usize>, BinaryHeap<&PossibleMatch>>::default(),
             |mut grouped_matches, final_match| {
                 grouped_matches
                     .entry(final_match.range.clone())
@@ -885,8 +624,7 @@ fn group_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::EntityValue;
-    use crate::data::Gazetteer;
+    use crate::data::*;
     use crate::gazetteer;
     use crate::parser_builder::ParserBuilder;
     use failure::ResultExt;
@@ -957,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_words_and_edge_cases() {
+    fn test_handling_stop_words_and_edge_cases() {
         let gazetteer = gazetteer!(
             ("the flying stones", "The Flying Stones"),
             ("the rolling stones", "The Rolling Stones"),
@@ -973,18 +711,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let expected_stop_words: HashSet<_> = vec!["the", "stones", "hello"]
-            .into_iter()
-            .map(|sym| *parser.tokens_symbol_table.find_symbol(sym).unwrap())
-            .collect();
-        assert_eq!(expected_stop_words, parser.stop_words);
-        let mut expected_edge_cases: HashSet<u32> = HashSet::default();
-        expected_edge_cases.insert(parser.resolved_symbol_table.find_symbol("The Stones")[0]);
-        assert_eq!(expected_edge_cases, parser.edge_cases);
-
         // Value starting with a stop word
         parser.set_threshold(0.6);
-        let parsed = parser.run("je veux écouter les the rolling", 5).unwrap();
+        let parsed = parser.run("je veux écouter les the rolling", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1003,9 +732,7 @@ mod tests {
 
         // Value starting with a stop word and ending with one
         parser.set_threshold(1.0);
-        let parsed = parser
-            .run("je veux écouter les the rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter les the rolling stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1021,9 +748,7 @@ mod tests {
 
         // Value starting with two stop words
         parser.set_threshold(1.0);
-        let parsed = parser
-            .run("je veux écouter les the stones rolling", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter les the stones rolling", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1039,7 +764,7 @@ mod tests {
 
         // Edge case
         parser.set_threshold(1.0);
-        let parsed = parser.run("je veux écouter les the stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter les the stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1055,13 +780,11 @@ mod tests {
 
         // Edge case should not match if not present in full
         parser.set_threshold(0.5);
-        let parsed = parser.run("je veux écouter les the", 5).unwrap();
+        let parsed = parser.run("je veux écouter les the", 5);
         assert_eq!(parsed, vec![]);
 
         // Sentence containing an additional stop word which is absent from the gazetteer
-        let parsed = parser
-            .run("hello I want to listen to the rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("hello I want to listen to the rolling stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1076,9 +799,7 @@ mod tests {
         );
 
         // Multiple stop words at the beginning of a value
-        let parsed = parser
-            .run("hello I want to listen to the the rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("hello I want to listen to the the rolling stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1094,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parser_base() {
+    fn test_parse() {
         let gazetteer = gazetteer!(
             ("the flying stones", "The Flying Stones"),
             ("the rolling stones", "The Rolling Stones"),
@@ -1108,63 +829,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser
-            .run("je veux écouter les rolling stones", 5)
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ParsedValue {
-                    matched_value: "je".to_string(),
-                    resolved_value: ResolvedValue {
-                        resolved: "Je Suis Animal".to_string(),
-                        raw_value: "je suis animal".to_string(),
-                    },
-                    alternatives: vec![],
-                    range: 0..2,
-                },
-                ParsedValue {
-                    matched_value: "rolling stones".to_string(),
-                    resolved_value: ResolvedValue {
-                        resolved: "The Rolling Stones".to_string(),
-                        raw_value: "the rolling stones".to_string(),
-                    },
-                    alternatives: vec![],
-                    range: 20..34,
-                },
-            ]
-        );
-
-        parsed = parser
-            .run("je veux ecouter les \t rolling stones", 5)
-            .unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ParsedValue {
-                    matched_value: "je".to_string(),
-                    resolved_value: ResolvedValue {
-                        resolved: "Je Suis Animal".to_string(),
-                        raw_value: "je suis animal".to_string(),
-                    },
-                    alternatives: vec![],
-                    range: 0..2,
-                },
-                ParsedValue {
-                    matched_value: "rolling stones".to_string(),
-                    resolved_value: ResolvedValue {
-                        resolved: "The Rolling Stones".to_string(),
-                        raw_value: "the rolling stones".to_string(),
-                    },
-                    alternatives: vec![],
-                    range: 22..36,
-                },
-            ]
-        );
-
-        parsed = parser
-            .run("i want to listen to rolling stones and blink eight", 5)
-            .unwrap();
+        let parsed = parser.run("i want to listen to rolling stones and blink eight", 5);
         assert_eq!(
             parsed,
             vec![
@@ -1189,12 +854,11 @@ mod tests {
             ]
         );
 
-        parsed = parser.run("joue moi quelque chose", 5).unwrap();
-        assert_eq!(parsed, vec![]);
+        assert!(parser.run("joue moi quelque chose", 5).is_empty());
     }
 
     #[test]
-    fn test_parser_multiple_raw_values() {
+    fn test_multiple_raw_values() {
         let gazetteer = gazetteer!(
             ("blink one eight two", "Blink-182"),
             ("blink 182", "Blink-182"),
@@ -1207,7 +871,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut parsed = parser.run("let's listen to blink 182", 5).unwrap();
+        let mut parsed = parser.run("let's listen to blink 182", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1222,7 +886,7 @@ mod tests {
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to blink", 5).unwrap();
+        parsed = parser.run("let's listen to blink", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1237,7 +901,7 @@ mod tests {
         );
 
         parser.set_threshold(0.5);
-        parsed = parser.run("let's listen to one eight two", 5).unwrap();
+        parsed = parser.run("let's listen to one eight two", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1253,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parser_with_ranking() {
+    fn test_disambiguation_with_ranking() {
         let gazetteer = gazetteer!(
             ("jacques brel", "Jacques Brel"),
             ("the rolling stones", "The Rolling Stones"),
@@ -1268,8 +932,8 @@ mod tests {
             .build()
             .unwrap();
 
-        // When there is a tie in terms of number of token matched, match the most popular choice
-        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
+        // When there is a tie in terms of number of tokens matched, match the most popular choice
+        let parsed = parser.run("je veux écouter the stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1287,7 +951,7 @@ mod tests {
         );
 
         // Resolve to the value with more words matching regardless of popularity
-        let parsed = parser.run("je veux écouter the flying stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter the flying stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1302,7 +966,7 @@ mod tests {
         );
 
         // Resolve to the value with the best matching ratio
-        let parsed = parser.run("je veux écouter jacques", 5).unwrap();
+        let parsed = parser.run("je veux écouter jacques", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1318,72 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preprend_values() {
-        let gazetteer = gazetteer!(
-            ("jacques brel", "Jacques Brel"),
-            ("the rolling stones", "The Rolling Stones"),
-        );
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.5)
-            .gazetteer(gazetteer)
-            .build()
-            .unwrap();
-
-        let input = "je veux écouter brel";
-
-        let parsed = parser.run(input, 5).unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                matched_value: "brel".to_string(),
-                resolved_value: ResolvedValue {
-                    resolved: "Jacques Brel".to_string(),
-                    raw_value: "jacques brel".to_string(),
-                },
-                alternatives: vec![],
-                range: 16..20,
-            }]
-        );
-
-        let values_to_prepend = vec![
-            EntityValue {
-                resolved_value: "Daniel Brel".to_string(),
-                raw_value: "daniel brel".to_string(),
-            },
-            EntityValue {
-                resolved_value: "Eric Brel".to_string(),
-                raw_value: "eric brel".to_string(),
-            },
-        ];
-
-        parser.prepend_values(values_to_prepend).unwrap();
-
-        let parsed = parser.run(input, 5).unwrap();
-        assert_eq!(
-            parsed,
-            vec![ParsedValue {
-                matched_value: "brel".to_string(),
-                resolved_value: ResolvedValue {
-                    resolved: "Daniel Brel".to_string(),
-                    raw_value: "daniel brel".to_string(),
-                },
-                alternatives: vec![
-                    ResolvedValue {
-                        resolved: "Eric Brel".to_string(),
-                        raw_value: "eric brel".to_string(),
-                    },
-                    ResolvedValue {
-                        resolved: "Jacques Brel".to_string(),
-                        raw_value: "jacques brel".to_string(),
-                    }
-                ],
-                range: 16..20,
-            }]
-        );
-    }
-
-    #[test]
-    fn test_parser_with_restart() {
+    fn test_should_not_parse_non_adjacent_tokens() {
         let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -1391,14 +990,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser
-            .run("the music I want to listen to is rolling on stones", 5)
-            .unwrap();
+        let parsed = parser.run("the music I want to listen to is rolling on stones", 5);
         assert_eq!(parsed, vec![]);
     }
 
     #[test]
-    fn test_parser_with_unicode_whitespace() {
+    fn test_should_parse_with_unicode_whitespace() {
         let gazetteer = gazetteer!(("quand est -ce", "Quand est-ce ?"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -1406,7 +1003,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("non quand est survivre", 5).unwrap();
+        let parsed = parser.run("non quand est survivre", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1422,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parser_with_mixed_ordered_entity() {
+    fn test_should_parse_with_mixed_ordered_entity() {
         let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.5)
@@ -1430,7 +1027,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("rolling the stones", 5).unwrap();
+        let parsed = parser.run("rolling the stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1461,9 +1058,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser
-            .run("je veux écouter les rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones", 5);
         assert_eq!(
             parsed,
             vec![
@@ -1489,9 +1084,7 @@ mod tests {
         );
 
         parser.set_threshold(0.3);
-        let parsed = parser
-            .run("je veux écouter les rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones", 5);
         assert_eq!(
             parsed,
             vec![
@@ -1526,9 +1119,7 @@ mod tests {
         );
 
         parser.set_threshold(0.6);
-        let parsed = parser
-            .run("je veux écouter les rolling stones", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter les rolling stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1552,13 +1143,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("the the the", 5).unwrap();
+        let parsed = parser.run("the the the", 5);
         assert_eq!(parsed, vec![]);
 
         parser.set_threshold(1.0);
-        let parsed = parser
-            .run("the the the rolling stones stones stones stones", 5)
-            .unwrap();
+        let parsed = parser.run("the the the rolling stones stones stones stones", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1574,7 +1163,7 @@ mod tests {
     }
 
     #[test]
-    fn test_injection_ranking() {
+    fn test_parsing_should_use_ranking_after_injection() {
         let gazetteer = gazetteer!(("the rolling stones", "The Rolling Stones"),);
         let mut parser = ParserBuilder::default()
             .minimum_tokens_ratio(0.6)
@@ -1588,10 +1177,8 @@ mod tests {
         }];
 
         // Test with preprend set to false
-        parser
-            .inject_new_values(new_values.clone(), false, false)
-            .unwrap();
-        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
+        parser = parser.inject_new_values(new_values.clone(), false, false);
+        let parsed = parser.run("je veux écouter les flying stones", 5);
 
         assert_eq!(
             parsed,
@@ -1606,7 +1193,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5);
 
         assert_eq!(
             parsed,
@@ -1625,9 +1212,9 @@ mod tests {
         );
 
         // Test with preprend set to true
-        parser.inject_new_values(new_values, true, true).unwrap();
+        parser = parser.inject_new_values(new_values, true, true);
 
-        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5);
 
         assert_eq!(
             parsed,
@@ -1642,7 +1229,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("je veux écouter the stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter the stones", 5);
 
         assert_eq!(
             parsed,
@@ -1675,7 +1262,7 @@ mod tests {
             raw_value: "the flying stones".to_string(),
         }];
 
-        parser.inject_new_values(new_values_1, true, false).unwrap();
+        parser = parser.inject_new_values(new_values_1, true, false);
 
         // Test injection from vanilla
         let new_values_2 = vec![EntityValue {
@@ -1683,21 +1270,12 @@ mod tests {
             raw_value: "queens of the stone age".to_string(),
         }];
 
-        let flying_idx = *parser.tokens_symbol_table.find_symbol("flying").unwrap();
-        let stones_idx = *parser.tokens_symbol_table.find_symbol("stones").unwrap();
-        let flying_stones_idx = *parser
-            .resolved_symbol_table
-            .find_symbol("The Flying Stones")
-            .first()
-            .unwrap();
-        parser.inject_new_values(new_values_2, true, true).unwrap();
+        parser = parser.inject_new_values(new_values_2, true, true);
 
-        let parsed = parser.run("je veux écouter les flying stones", 5).unwrap();
+        let parsed = parser.run("je veux écouter les flying stones", 5);
         assert_eq!(parsed, vec![]);
 
-        let parsed = parser
-            .run("je veux écouter queens the stone age", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter queens the stone age", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1710,99 +1288,6 @@ mod tests {
                 range: 16..36,
             }]
         );
-
-        assert!(parser
-            .resolved_symbol_table
-            .find_symbol("The Flying Stones")
-            .is_empty());
-        assert!(parser.tokens_symbol_table.find_symbol("flying").is_none());
-        assert!(!parser.token_to_resolved_values.contains_key(&flying_idx));
-        assert!(!parser
-            .token_to_resolved_values
-            .get(&stones_idx)
-            .unwrap()
-            .contains(&flying_stones_idx));
-        assert!(!parser
-            .resolved_value_to_tokens
-            .contains_key(&flying_stones_idx));
-    }
-
-    #[test]
-    fn test_injection_should_fail_when_adding_empty_values() {
-        let gazetteer = Gazetteer::default();
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.6)
-            .gazetteer(gazetteer)
-            .build()
-            .unwrap();
-
-        let new_values_1 = vec![EntityValue {
-            resolved_value: "some_resolved_value".to_string(),
-            raw_value: " ".to_string(),
-        }];
-
-        let is_err = parser
-            .inject_new_values(new_values_1.clone(), true, true)
-            .is_err();
-        assert!(is_err);
-    }
-
-    #[test]
-    fn test_injection_stop_words() {
-        let gazetteer = gazetteer!(
-            ("the rolling stones", "The Rolling Stones"),
-            ("the stones", "The Stones"),
-        );
-        let mut parser = ParserBuilder::default()
-            .minimum_tokens_ratio(0.0)
-            .gazetteer(gazetteer.clone())
-            .n_stop_words(2)
-            .additional_stop_words(vec!["hello".to_string()])
-            .build()
-            .unwrap();
-
-        let parser_no_stop_words = ParserBuilder::default()
-            .minimum_tokens_ratio(0.0)
-            .gazetteer(gazetteer)
-            .build()
-            .unwrap();
-
-        let mut expected_stop_words = vec!["the", "stones", "hello"]
-            .into_iter()
-            .map(|sym| *parser.tokens_symbol_table.find_symbol(sym).unwrap())
-            .collect();
-
-        let mut expected_edge_cases: HashSet<u32> = HashSet::default();
-        expected_edge_cases.insert(parser.resolved_symbol_table.find_symbol("The Stones")[0]);
-
-        assert_eq!(parser.stop_words, expected_stop_words);
-        assert_eq!(parser.edge_cases, expected_edge_cases);
-
-        let new_values = vec![
-            EntityValue {
-                resolved_value: "Rolling".to_string(),
-                raw_value: "rolling".to_string(),
-            },
-            EntityValue {
-                resolved_value: "Rolling Two".to_string(),
-                raw_value: "rolling two".to_string(),
-            },
-        ];
-
-        parser.inject_new_values(new_values, true, false).unwrap();
-
-        expected_stop_words.remove(parser.tokens_symbol_table.find_symbol("stones").unwrap());
-        expected_stop_words.insert(*parser.tokens_symbol_table.find_symbol("rolling").unwrap());
-
-        expected_edge_cases.remove(&parser.resolved_symbol_table.find_symbol("The Stones")[0]);
-        expected_edge_cases.insert(parser.resolved_symbol_table.find_symbol("Rolling")[0]);
-
-        assert_eq!(expected_stop_words, parser.stop_words);
-        assert_eq!(expected_edge_cases, parser.edge_cases);
-
-        // No stop words case
-        assert!(parser_no_stop_words.stop_words.is_empty());
-        assert!(parser_no_stop_words.edge_cases.is_empty());
     }
 
     #[test]
@@ -1822,9 +1307,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser
-            .run("je veux écouter le black and white album", 5)
-            .unwrap();
+        let parsed = parser.run("je veux écouter le black and white album", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1838,7 +1321,7 @@ mod tests {
             }]
         );
 
-        let parsed = parser.run("zero one two three four five", 5).unwrap();
+        let parsed = parser.run("zero one two three four five", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1852,7 +1335,7 @@ mod tests {
             },]
         );
 
-        let parsed = parser.run("zero one two three four five six", 5).unwrap();
+        let parsed = parser.run("zero one two three four five six", 5);
         assert_eq!(
             parsed,
             vec![
@@ -1892,7 +1375,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("I want to play to invader", 5).unwrap();
+        let parsed = parser.run("I want to play to invader", 5);
         assert_eq!(
             parsed,
             vec![ParsedValue {
@@ -1925,7 +1408,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let parsed = parser.run("I want to play to invader", 2).unwrap();
+        let parsed = parser.run("I want to play to invader", 2);
         assert_eq!(
             parsed,
             vec![ParsedValue {

@@ -88,7 +88,7 @@ impl ParserBuilder {
         }
         let mut parser = Parser::default();
         for (rank, entity_value) in self.gazetteer.data.into_iter().enumerate() {
-            parser.add_value(entity_value, rank as u32)?;
+            parser.add_value(entity_value, rank as u32);
         }
         parser.set_threshold(self.threshold);
         parser.set_stop_words(
@@ -148,7 +148,7 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in gazetteer.data.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         expected_parser.set_threshold(0.5);
         expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
@@ -193,10 +193,10 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in entity_values_1.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         for (rank, entity_value) in entity_values_2.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, 1 + rank as u32).unwrap();
+            expected_parser.add_value(entity_value, 1 + rank as u32);
         }
         expected_parser.set_threshold(0.5);
         expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
@@ -235,7 +235,7 @@ mod tests {
         // Then
         let mut expected_parser = Parser::default();
         for (rank, entity_value) in entity_values.into_iter().enumerate() {
-            expected_parser.add_value(entity_value, rank as u32).unwrap();
+            expected_parser.add_value(entity_value, rank as u32);
         }
         expected_parser.set_threshold(0.5);
         expected_parser.set_stop_words(2, Some(vec!["hello".to_string()]));
