@@ -15,8 +15,7 @@ impl EntityValue {
     pub fn into_tokenized(self) -> TokenizedEntityValue {
         TokenizedEntityValue {
             resolved_value: self.resolved_value,
-            tokens: whitespace_tokenizer(&*self.raw_value)
-                .into_iter()
+            tokens: whitespace_tokenizer(&self.raw_value)
                 .map(|(_, token)| token)
                 .collect(),
         }
@@ -128,7 +127,7 @@ impl Gazetteer {
 
     /// Extend the Gazetteer with the values of another Gazetteer
     pub fn extend(&mut self, gazetteer: Self) {
-        self.data.extend(gazetteer.data.into_iter())
+        self.data.extend(gazetteer.data)
     }
 }
 
@@ -163,6 +162,7 @@ impl Ord for ParsedValue {
 }
 
 impl PartialOrd for ParsedValue {
+    #[allow(clippy::non_canonical_partial_ord_impl)]
     fn partial_cmp(&self, other: &ParsedValue) -> Option<Ordering> {
         if self.range.end <= other.range.start {
             Some(Ordering::Less)

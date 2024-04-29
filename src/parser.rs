@@ -1,20 +1,21 @@
-use crate::constants::*;
-use crate::data::EntityValue;
-use crate::errors::*;
-use crate::parser_registry::ParserRegistry;
-use crate::utils::{check_threshold, whitespace_tokenizer};
-use crate::ParsedValue;
-use failure::{format_err, ResultExt};
-use fnv::{FnvHashMap, FnvHashSet};
-use rmp_serde::{from_read, Serializer};
-use serde::{Deserialize, Serialize};
-use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
+
+use failure::{format_err, ResultExt};
+use fnv::{FnvHashMap, FnvHashSet};
+use rmp_serde::{from_read, Serializer};
+use serde::{Deserialize, Serialize};
+
+use crate::constants::*;
+use crate::data::EntityValue;
+use crate::errors::*;
+use crate::parser_registry::ParserRegistry;
+use crate::utils::{check_threshold, whitespace_tokenizer};
+use crate::ParsedValue;
 
 /// Struct representing the parser. The Parser will match the longest possible contiguous
 /// substrings of a query that match partial entity values. The order in which the values are
@@ -73,19 +74,18 @@ impl PossibleMatch {
 }
 
 impl Ord for PossibleMatch {
+    #[allow(clippy::if_same_then_else)]
     fn cmp(&self, other: &PossibleMatch) -> Ordering {
         if self.n_consumed_tokens < other.n_consumed_tokens {
             Ordering::Less
         } else if self.n_consumed_tokens > other.n_consumed_tokens {
             Ordering::Greater
+        } else if self.raw_value_length < other.raw_value_length {
+            Ordering::Greater
+        } else if self.raw_value_length > other.raw_value_length {
+            Ordering::Less
         } else {
-            if self.raw_value_length < other.raw_value_length {
-                Ordering::Greater
-            } else if self.raw_value_length > other.raw_value_length {
-                Ordering::Less
-            } else {
-                other.rank.cmp(&self.rank)
-            }
+            other.rank.cmp(&self.rank)
         }
     }
 }
@@ -183,7 +183,7 @@ impl Parser {
             .with_context(|_| format_err!("Error when serializing the parser's metadata"))?;
 
         let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let mut writer = fs::File::create(&parser_path)
+        let mut writer = fs::File::create(parser_path)
             .with_context(|_| format_err!("Error when creating the parser file"))?;
 
         self.serialize(&mut Serializer::new(&mut writer))
@@ -201,14 +201,14 @@ impl Parser {
     /// Load a parser from a folder
     pub fn from_folder<P: AsRef<Path>>(folder_name: P) -> Result<Parser> {
         let metadata_path = folder_name.as_ref().join(METADATA_FILENAME);
-        let metadata_file = fs::File::open(&metadata_path)
+        let metadata_file = fs::File::open(metadata_path)
             .with_context(|_| format_err!("Error when opening the metadata file"))?;
 
         let config: ParserConfig = serde_json::from_reader(metadata_file)
             .with_context(|_| format_err!("Error when deserializing the metadata"))?;
 
         let parser_path = folder_name.as_ref().join(config.parser_filename);
-        let reader = fs::File::open(&parser_path)
+        let reader = fs::File::open(parser_path)
             .with_context(|_| format_err!("Error when opening the parser file"))?;
 
         Ok(from_read(reader)
@@ -270,14 +270,14 @@ impl Parser {
 
                     // Iterate over current possible matches containing the stop word and
                     // try to grow them (but do not initiate a new possible match)
-                    for (res_val, mut possible_match) in &mut partial_matches {
+                    for (res_val, possible_match) in &mut partial_matches {
                         if !res_vals_from_token.contains(res_val)
                             || self.registry.is_edge_case(*res_val)
                         {
                             continue;
                         }
                         self.update_previous_match(
-                            &mut possible_match,
+                            possible_match,
                             token_idx,
                             *value,
                             range.clone(),
@@ -308,6 +308,7 @@ impl Parser {
         group_matches(final_matches, max_alternatives)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_or_insert_possible_match(
         &self,
         value: u32,
@@ -315,7 +316,7 @@ impl Parser {
         token_idx: usize,
         range: Range<usize>,
         partial_matches: &mut FnvHashMap<u32, PossibleMatch>,
-        mut final_matches: &mut Vec<PossibleMatch>,
+        final_matches: &mut Vec<PossibleMatch>,
         skipped_tokens: &mut FnvHashMap<usize, (Range<usize>, u32)>,
         threshold: f32,
     ) {
@@ -327,21 +328,20 @@ impl Parser {
                     value,
                     range,
                     threshold,
-                    &mut final_matches,
+                    final_matches,
                 );
             }
             Entry::Vacant(entry) => {
-                self.insert_new_possible_match(
+                if let Some(new_possible_match) = self.insert_new_possible_match(
                     res_val,
                     value,
                     range,
                     token_idx,
                     threshold,
-                    &skipped_tokens,
-                )
-                .map(|new_possible_match| {
+                    skipped_tokens,
+                ) {
                     entry.insert(new_possible_match);
-                });
+                }
             }
         }
     }
@@ -353,7 +353,7 @@ impl Parser {
         value: u32,
         range: Range<usize>,
         threshold: f32,
-        ref mut final_matches: &mut Vec<PossibleMatch>,
+        final_matches: &mut Vec<PossibleMatch>,
     ) {
         let (rank, otokens) = self.registry.get_tokens(possible_match.resolved_value);
 
@@ -361,9 +361,12 @@ impl Parser {
             // Grow the last Possible Match
             // Find the next token in the resolved value that matches the
             // input token
-            for otoken_idx in (possible_match.last_token_in_resolution + 1)..otokens.len() {
-                let otok = otokens[otoken_idx];
-                if value == otok {
+            for (otoken_idx, otoken) in otokens
+                .iter()
+                .enumerate()
+                .skip(possible_match.last_token_in_resolution + 1)
+            {
+                if value == *otoken {
                     possible_match.range.end = range.end;
                     possible_match.n_consumed_tokens += 1;
                     possible_match.last_token_in_input = token_idx;
@@ -382,11 +385,10 @@ impl Parser {
             final_matches.push(possible_match.clone());
         }
         // Then we initialize a new PossibleMatch with the same res val
-        let last_token_in_resolution = otokens.iter().position(|e| *e == value).expect(&*format!(
-            "Missing token {} from list {:?}",
-            value,
-            otokens.clone()
-        ));
+        let last_token_in_resolution = otokens
+            .iter()
+            .position(|e| *e == value)
+            .unwrap_or_else(|| panic!("Missing token {} from list {:?}", value, otokens.clone()));
 
         *possible_match = PossibleMatch {
             resolved_value: possible_match.resolved_value,
@@ -414,11 +416,10 @@ impl Parser {
         skipped_tokens: &FnvHashMap<usize, (Range<usize>, u32)>,
     ) -> Option<PossibleMatch> {
         let (rank, otokens) = self.registry.get_tokens(res_val);
-        let last_token_in_resolution = otokens.iter().position(|e| *e == value).expect(&*format!(
-            "Missing token {} from list {:?}",
-            value,
-            otokens.clone()
-        ));
+        let last_token_in_resolution = otokens
+            .iter()
+            .position(|e| *e == value)
+            .unwrap_or_else(|| panic!("Missing token {} from list {:?}", value, otokens.clone()));
         let mut possible_match = PossibleMatch {
             resolved_value: res_val,
             range,
@@ -523,7 +524,7 @@ impl Parser {
                     possible_match.tokens_range.start <= **idx
                         && possible_match.tokens_range.end > **idx
                 })
-                .map(|idx| *idx)
+                .copied()
                 .collect();
 
             if !overlapping_tokens.is_empty() {
@@ -601,8 +602,8 @@ fn group_matches(
                 grouped_matches
             },
         )
-        .into_iter()
-        .map(|(_, mut matches)| {
+        .into_values()
+        .map(|mut matches| {
             let mut best_match = matches.pop().unwrap().clone();
             while !matches.is_empty()
                 && best_match.alternative_resolved_values.len() < max_alternatives
@@ -623,12 +624,14 @@ fn group_matches(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use failure::ResultExt;
+    use tempfile::tempdir;
+
     use crate::data::*;
     use crate::gazetteer;
     use crate::parser_builder::ParserBuilder;
-    use failure::ResultExt;
-    use tempfile::tempdir;
+
+    use super::*;
 
     fn get_license_info() -> LicenseInfo {
         let license_content = "Some content here".to_string();

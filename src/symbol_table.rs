@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 /// Implementation of a symbol table that
 /// - always maps a given index to a single string
@@ -16,7 +17,7 @@ impl TokenSymbolTable {
     pub fn add_symbol(&mut self, symbol: String) -> u32 {
         self.string_to_index
             .get(&symbol)
-            .map(|idx| *idx)
+            .copied()
             .unwrap_or_else(|| {
                 let symbol_index = self.available_index;
                 self.available_index += 1;

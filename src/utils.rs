@@ -79,10 +79,7 @@ mod tests {
 
         let mut tokenizer = whitespace_tokenizer("дра \t नमस्ते");
         assert_eq!(tokenizer.next(), Some((0..3, "дра".to_string())));
-        assert_eq!(
-            tokenizer.next(),
-            Some((6..12, "नमस्ते".to_string()))
-        );
+        assert_eq!(tokenizer.next(), Some((6..12, "नमस्ते".to_string())));
 
         let mut tokenizer = whitespace_tokenizer("je veux écouter les rolling stones");
         assert_eq!(tokenizer.next(), Some((0..2, "je".to_string())));
