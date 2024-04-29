@@ -1,7 +1,9 @@
+use std::collections::{BTreeSet, HashSet};
+
+use serde::{Deserialize, Serialize};
+
 use crate::data::{RegisteredEntityValue, ResolvedValue, TokenizedEntityValue};
 use crate::symbol_table::{ResolvedSymbolTable, TokenSymbolTable};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
 
 type Rank = u32;
 
@@ -59,7 +61,7 @@ impl ParserRegistry {
                     .push(token_idx);
             }
         }
-        return Some(res_value_idx);
+        Some(res_value_idx)
     }
 
     /// Prepends a list of entity values to the parser and update the ranks accordingly.
@@ -131,7 +133,7 @@ impl ParserRegistry {
                     })
                     .collect()
             })
-            .unwrap_or_else(|| vec![]);
+            .unwrap_or_else(Vec::new);
 
         self.set_top_stop_words(n_stop_words);
     }
@@ -151,7 +153,7 @@ impl ParserRegistry {
             .into_iter()
             .take(nb_stop_words)
             .map(|(idx, _)| idx)
-            .chain(self.additional_stop_words.clone().into_iter())
+            .chain(self.additional_stop_words.clone())
             .collect();
 
         // Update the set of edge_cases. i.e. resolved values that only contain stop words
