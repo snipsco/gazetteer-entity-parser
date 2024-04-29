@@ -1,11 +1,12 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.9.0] - 2024-04-29
 ### Changed
 - Remove the `Result` in the `run` API [#43](https://github.com/snipsco/gazetteer-entity-parser/pull/43)
 - Consume the `Parser` object during injection [#43](https://github.com/snipsco/gazetteer-entity-parser/pull/43)
 - Improve the memory footprint of `ResolvedSymbolTable` [#43](https://github.com/snipsco/gazetteer-entity-parser/pull/43)
+- Update dependencies and remove examples + benches [#46](https://github.com/snipsco/gazetteer-entity-parser/pull/46)
 
 ## [0.8.0] - 2019-08-27
 ### Changed

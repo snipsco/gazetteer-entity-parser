@@ -1,6 +1,6 @@
 [package]
 name = "gazetteer-entity-parser"
-version = "0.8.0"
+version = "0.9.0"
 authors = ["Alaa Saade <alaa.saade@snips.ai>"]
 repository = "https://github.com/snipsco/gazetteer-entity-parser"
 description = "Gazetteer-based entity parser"
